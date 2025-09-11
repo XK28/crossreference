@@ -1,0 +1,82 @@
+import os
+import pandas as pd
+from functools import reduce
+
+def cross_reference_excels(
+    folder_path: str,
+    key_column: str,
+    how: str = "outer",
+    output_file: str = "resultado_cross.xlsx",
+    excel_extensions: tuple = (".xlsx", ".xls")
+):
+    """
+    Cruza varios archivos de Excel en una carpeta, usando una columna en común.
+
+    :param folder_path: ruta de la carpeta con los archivos Excel
+    :param key_column: nombre de la columna que se usará como clave para cruzar
+    :param how: tipo de join ('inner', 'outer', 'left', 'right')
+    :param output_file: nombre del archivo Excel de salida
+    :param excel_extensions: extensiones de archivos Excel a considerar
+    :return: DataFrame resultante del cruce
+    """
+
+    # Listar los archivos Excel en la carpeta
+    archivos = [
+        os.path.join(folder_path, f)
+        for f in os.listdir(folder_path)
+        if f.lower().endswith(excel_extensions)
+    ]
+    if not archivos:
+        raise FileNotFoundError(f"No se encontró ningún archivo Excel en {folder_path}")
+
+    # Leer cada archivo como DataFrame
+    lista_dfs = []
+    for path in archivos:
+        try:
+            df = pd.read_excel(path)
+        except Exception as e:
+            print(f"Error al leer {path}: {e}")
+            continue
+
+        if key_column not in df.columns:
+            print(f"Advertencia: el archivo {path} no contiene la columna '{key_column}'. Se omitirá.")
+            continue
+
+        # Opcional: asegurarse de que la columna clave sea del mismo tipo
+        # Por ejemplo, forzar a str (o int) si hace falta
+        # df[key_column] = df[key_column].astype(str)
+
+        lista_dfs.append(df)
+
+    if not lista_dfs:
+        raise ValueError("Después de filtrar, no hay DataFrames válidos para cruzar.")
+
+    # Cruzar todos los DataFrames usando reduce
+    df_merged = reduce(
+        lambda left, right: pd.merge(left, right, on=key_column, how=how),
+        lista_dfs
+    )
+
+    # Guardar el resultado
+    df_merged.to_excel(output_file, index=False)
+    print(f"Cruce completado. Archivo generado: {output_file}")
+
+    return df_merged
+
+
+if __name__ == "__main__":
+    # Ejemplo de uso:
+    carpeta = "ruta/a/la/carpeta_con_excels"
+    columna_clave = "ID"       # <-- cámbialo por la columna que quieras usar
+    tipo_join = "outer"        # otra opción: "inner", "left", "right"
+    archivo_salida = "cruce_varios.xlsx"
+
+    resultado = cross_reference_excels(
+        carpeta,
+        columna_clave,
+        how=tipo_join,
+        output_file=archivo_salida
+    )
+
+    # Mostrar una vista del resultado
+    print(resultado.head())
