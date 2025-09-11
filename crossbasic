@@ -1,0 +1,14 @@
+import pandas as pd
+
+# Cargar los documentos de Excel
+df1 = pd.read_excel("archivo1.xlsx")
+df2 = pd.read_excel("archivo2.xlsx")
+
+# Supongamos que quieres hacer un cruce por la columna "ID"
+# (puedes cambiar "ID" por la columna que quieras usar como referencia)
+cross = pd.merge(df1, df2, on="ID", how="inner")
+
+# Guardar el resultado en un nuevo archivo Excel
+cross.to_excel("resultado_cross.xlsx", index=False)
+
+print("Cross reference completado. Archivo generado: resultado_cross.xlsx")
