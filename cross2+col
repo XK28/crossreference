@@ -1,0 +1,105 @@
+import os
+import pandas as pd
+from functools import reduce
+from typing import List, Tuple
+
+def cross_reference_excels_multi_keys(
+    folder_path: str,
+    key_columns: List[str],
+    how: str = "outer",
+    output_file: str = "resultado_cross_multikey.xlsx",
+    excel_extensions: Tuple[str, ...] = (".xlsx", ".xls"),
+    validate: str = None  # opciones de validate en pd.merge: 'one_to_one', 'one_to_many', etc.
+) -> pd.DataFrame:
+    """
+    Cruza varios archivos de Excel en una carpeta, usando múltiples columnas como clave.
+
+    :param folder_path: ruta de la carpeta con los archivos Excel
+    :param key_columns: lista de nombres de columnas que se usarán como clave compuesta para cruces
+    :param how: tipo de join ('inner', 'outer', 'left', 'right')
+    :param output_file: nombre del archivo Excel de salida
+    :param excel_extensions: extensiones de archivos Excel a considerar
+    :param validate: opción de validación para merge (None o 'one_to_one', 'one_to_many', 'many_to_one', 'many_to_many')
+    :return: DataFrame resultante del cruce
+    """
+
+    # Verificar que key_columns no esté vacío
+    if not key_columns:
+        raise ValueError("Debe proporcionarse al menos una columna clave en `key_columns`.")
+
+    # Listar los archivos Excel en la carpeta
+    archivos = [
+        os.path.join(folder_path, f)
+        for f in os.listdir(folder_path)
+        if f.lower().endswith(excel_extensions)
+    ]
+
+    if not archivos:
+        raise FileNotFoundError(f"No se encontró ningún archivo Excel en {folder_path}")
+
+    # Leer cada archivo como DataFrame, filtrando los que no tengan todas las columnas clave
+    lista_dfs = []
+    for path in archivos:
+        try:
+            df = pd.read_excel(path)
+        except Exception as e:
+            print(f"Error al leer {path}: {e}")
+            continue
+
+        # Verificar que las columnas clave existan
+        faltantes = [col for col in key_columns if col not in df.columns]
+        if faltantes:
+            print(f"Advertencia: el archivo {path} NO contiene las columnas clave {faltantes}. Se omitirá.")
+            continue
+
+        # Asegurarse de que las columnas clave sean del mismo tipo, por ejemplo strings
+        # Esto ayuda a evitar diferencias de tipo que impiden matches
+        for col in key_columns:
+            # Puedes elegir el tipo que tenga más sentido: str, int, etc.
+            df[col] = df[col].astype(str).str.strip()
+
+        lista_dfs.append(df)
+
+    if not lista_dfs:
+        raise ValueError("Después de filtrar, no hay DataFrames válidos para cruzar.")
+
+    # Función que cruza dos DataFrames con las claves múltiples
+    def merge_two(left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:
+        merged = pd.merge(
+            left,
+            right,
+            on=key_columns,
+            how=how,
+            validate=validate,
+            suffixes=('_left', '_right')
+        )
+        return merged
+
+    # Cruzar todos los DataFrames usando reduce
+    df_merged = reduce(merge_two, lista_dfs)
+
+    # Guardar el resultado
+    df_merged.to_excel(output_file, index=False)
+    print(f"Cruce múltiple completado. Archivo generado: {output_file}")
+
+    return df_merged
+
+
+if __name__ == "__main__":
+    # Ejemplo de uso:
+    carpeta = "ruta/a/la/carpeta_con_excels"
+    claves = ["ID", "Fecha", "Categoria"]   # <-- cámbialas según tus columnas
+    tipo_join = "inner"                     # o 'outer', 'left', 'right'
+    salida = "resultado_multikey.xlsx"
+    validacion = "one_to_many"              # opcional: 'one_to_one', 'many_to_one', etc. O None
+
+    resultado = cross_reference_excels_multi_keys(
+        folder_path=carpeta,
+        key_columns=claves,
+        how=tipo_join,
+        output_file=salida,
+        validate=validacion
+    )
+
+    print("Primeras filas del resultado:")
+    print(resultado.head())
