@@ -1,0 +1,175 @@
+import os
+import pandas as pd
+from functools import reduce
+from typing import List, Tuple
+
+def cross_validate_excels_multi_keys_with_report(
+    folder_path: str,
+    key_columns: List[str],
+    how: str = "outer",
+    output_file: str = "resultado_cross_multikey_con_reporte.xlsx",
+    excel_extensions: Tuple[str, ...] = (".xlsx", ".xls"),
+    validate: str = None  # 'one_to_one', 'one_to_many', etc., o None
+) -> pd.DataFrame:
+    """
+    Cruza varios archivos de Excel usando múltiples columnas clave, y genera un reporte
+    indicando qué filas están en todos los archivos, y cuáles faltan en algunos.
+
+    :param folder_path: carpeta con los archivos Excel
+    :param key_columns: lista de nombres de columnas que forman la clave compuesta
+    :param how: tipo de join: 'inner', 'outer', 'left', 'right'
+    :param output_file: nombre del archivo Excel de salida con el cruce + reporte
+    :param excel_extensions: extensiones a buscar
+    :param validate: parámetro validate de pd.merge para chequeos de cardinalidad
+    :return: DataFrame resultante del cruce
+    """
+
+    # Validaciones iniciales
+    if not key_columns:
+        raise ValueError("Debe especificarse al menos una columna clave (key_columns).")
+
+    # Obtener lista de archivos Excel en la carpeta
+    archivos = [
+        os.path.join(folder_path, f)
+        for f in os.listdir(folder_path)
+        if f.lower().endswith(excel_extensions)
+    ]
+
+    if not archivos:
+        raise FileNotFoundError(f"No se encontró ningún archivo Excel en {folder_path}")
+
+    # Leer cada archivo, filtrar los que no tienen todas las columnas clave
+    lista_dfs = []
+    nombres_archivos = []  # para saber de qué archivo viene cada DF
+    for path in archivos:
+        try:
+            df = pd.read_excel(path)
+        except Exception as e:
+            print(f"Error al leer {path}: {e}")
+            continue
+
+        faltantes = [col for col in key_columns if col not in df.columns]
+        if faltantes:
+            print(f"Advertencia: el archivo {path} carece de columnas clave {faltantes}. Se omitirá.")
+            continue
+
+        # Normalizar columnas clave: convertir a str y eliminar espacios
+        for col in key_columns:
+            df[col] = df[col].astype(str).str.strip()
+
+        # Agregar una columna que indique este archivo (ej: nombre corto)
+        nombre = os.path.basename(path)
+        df["_archivo"] = nombre  # usamos para referencia
+        lista_dfs.append(df)
+        nombres_archivos.append(nombre)
+
+    if not lista_dfs:
+        raise ValueError("Después de filtrar, no hay archivos válidos para cruzar.")
+
+    # Función de merging par a par, pero también queremos mantener track de qué archivos aportan cada fila
+    def merge_with_indicator(left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:
+        merged = pd.merge(
+            left,
+            right,
+            on=key_columns,
+            how=how,
+            validate=validate,
+            suffixes=('_left', '_right'),
+            indicator=True
+        )
+        return merged
+
+    # Para el reporte, una estrategia: hacer merges sucesivos, y mantener una columna con los archivos que aportaron cada fila
+    # Otra estrategia: construir una estructura que cuente para cada fila cuántos archivos la contienen
+
+    # Primero, crear DataFrames simplificados que sólo tengan las columnas clave y una columna “_archivo”
+    dfs_claves = [df[key_columns + ["_archivo"]] for df in lista_dfs]
+
+    # Concatenar todos los registros clave de todos los archivos
+    df_all_keys = pd.concat(dfs_claves, ignore_index=True)
+
+    # Quitar duplicados exactos en clave+archivo
+    df_all_keys = df_all_keys.drop_duplicates()
+
+    # Contar para cada combinación de clave cuántos archivos aparece
+    # Crear columna clave combinada para facilitar conteo
+    # Opcional: podrías usar tuplas como índice
+    df_all_keys["clave_unica"] = df_all_keys[key_columns].agg("_".join, axis=1)
+
+    conteo = df_all_keys.groupby("clave_unica")["_archivo"].nunique().reset_index()
+    conteo = conteo.rename(columns={"_archivo": "n_archivos_presentes"})
+
+    # Número total de archivos buenos procesados
+    total_archivos = len(nombres_archivos)
+
+    # Marcar si está presente en todos los archivos
+    conteo["presente_en_todos"] = conteo["n_archivos_presentes"] == total_archivos
+
+    # Ahora, para el cruce final de datos completos (no sólo claves), cruzaremos los datos completos
+    # (esto produce un DataFrame con muchas columnas y NaNs donde no hay datos)
+    # Hacemos merges sucesivos sobre todos los archivos
+
+    # Empezar con el primer DF
+    df_merged = lista_dfs[0].copy()
+    # Renombrar todas las demás columnas distintas para evitar colisiones
+    # (excepto las claves y _archivo)
+    for i in range(1, len(lista_dfs)):
+        right = lista_dfs[i]
+        # Para evitar colisiones de nombres de columnas no clave, opcionalmente agregar sufijo basado en nombre de archivo
+        suf = f"_{os.path.splitext(nombres_archivos[i])[0]}"
+        # Renombrar columnas no clave y no "_archivo"
+        cols_right_renombrar = {
+            c: c + suf
+            for c in right.columns
+            if c not in key_columns and c != "_archivo"
+        }
+        right_ren = right.rename(columns=cols_right_renombrar)
+
+        df_merged = pd.merge(
+            df_merged,
+            right_ren,
+            on=key_columns,
+            how=how,
+            validate=validate,
+            suffixes=("", suf)  # cuidado, puede repetirse “_left”, etc.
+        )
+
+    # Ahora unir con conteo/informe para señalar filas que no están completas
+    # Primero, crear “clave_unica” para df_merged igual que en conteo
+    df_merged["clave_unica"] = df_merged[key_columns].agg("_".join, axis=1)
+    # Unir
+    df_final = df_merged.merge(conteo[["clave_unica", "n_archivos_presentes", "presente_en_todos"]],
+                                on="clave_unica",
+                                how="left")
+
+    # Guardar resultado a Excel
+    # Puedes guardar hojas separadas: una hoja con cruce completo, otra con conteo/reporte si quieres
+    with pd.ExcelWriter(output_file) as writer:
+        df_final.to_excel(writer, sheet_name="cruce_completo", index=False)
+        conteo.to_excel(writer, sheet_name="reporte_conteo", index=False)
+
+    print(f"Cruce con reporte completado. Archivo generado: {output_file}")
+    print(f"Se procesaron {total_archivos} archivos.")
+    print(f"Número de filas distintas de claves en total: {len(conteo)}")
+
+    return df_final
+
+
+if __name__ == "__main__":
+    # Ejemplo de uso:
+    carpeta = "ruta/a/la/carpeta_excels"
+    claves = ["ID", "Fecha", "Categoria"]
+    tipo_join = "outer"
+    salida = "resultado_con_reporte.xlsx"
+    valid = None  # o "one_to_many", etc.
+
+    df_result = cross_validate_excels_multi_keys_with_report(
+        folder_path=carpeta,
+        key_columns=claves,
+        how=tipo_join,
+        output_file=salida,
+        validate=valid
+    )
+
+    print("Primeras filas del resultado cruzado:")
+    print(df_result.head())
