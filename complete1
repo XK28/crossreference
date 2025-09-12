@@ -1,0 +1,72 @@
+import os
+import pandas as pd
+from typing import List, Tuple
+
+def leer_referencia_posiciones(carpeta: str, extensiones_excel: Tuple[str, ...]) -> List[Tuple[str, str]]:
+    datos_referencia = []
+    archivos = [f for f in os.listdir(carpeta) if f.endswith(extensiones_excel) and not f.startswith("~$")]
+    for archivo in archivos:
+        path = os.path.join(carpeta, archivo)
+        try:
+            xls = pd.ExcelFile(path, engine='openpyxl' if path.endswith('.xlsx') else 'xlrd')
+            df = xls.parse(xls.sheet_names[0], header=None)
+            for fila in df.itertuples(index=False):
+                if len(fila) >= 6:
+                    datos_referencia.append((str(fila[1]).strip(), str(fila[5]).strip()))
+        except Exception as e:
+            print(f"Error al leer {archivo}: {e}")
+    return datos_referencia
+
+def leer_validacion_columnas(carpeta: str, extensiones_excel: Tuple[str, ...]) -> List[Tuple[str, str]]:
+    datos_validacion = []
+    archivos = [f for f in os.listdir(carpeta) if f.endswith(extensiones_excel) and not f.startswith("~$")]
+    for archivo in archivos:
+        path = os.path.join(carpeta, archivo)
+        try:
+            xls = pd.ExcelFile(path, engine='openpyxl' if path.endswith('.xlsx') else 'xlrd')
+            df = xls.parse(xls.sheet_names[0], header=None, skiprows=8)
+            for fila in df.itertuples(index=False):
+                if len(fila) >= 3:
+                    datos_validacion.append((str(fila[1]).strip(), str(fila[2]).strip()))
+        except Exception as e:
+            print(f"Error al leer {archivo}: {e}")
+    return datos_validacion
+
+def comparar_excel_primera_hoja_con_transformacion(
+    carpeta_validacion: str,
+    carpeta_referencia: str,
+    columnas_clave_validacion: List[str],
+    columnas_clave_referencia: List[str],
+    output_file: str = "reporte_discrepancias.xlsx",
+    extensiones_excel: Tuple[str, ...] = (".xlsx", ".xls")
+) -> None:
+
+    # Parte nueva: comparación por posiciones específicas
+    referencia_posiciones = leer_referencia_posiciones(carpeta_referencia, extensiones_excel)
+    validacion_columnas = leer_validacion_columnas(carpeta_validacion, extensiones_excel)
+
+    discrepancias = []
+    for val_b, val_c in validacion_columnas:
+        if not any(val_b == ref[0] for ref in referencia_posiciones):
+            discrepancias.append(("Columna B", val_b))
+        if not any(val_c == ref[1] for ref in referencia_posiciones):
+            discrepancias.append(("Columna C", val_c))
+
+    # Guardar reporte
+    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+        if discrepancias:
+            df_discrepancias = pd.DataFrame(discrepancias, columns=["Columna", "Valor no encontrado"])
+            df_discrepancias.to_excel(writer, sheet_name="Discrepancias_Posiciones", index=False)
+        else:
+            pd.DataFrame({"Mensaje": ["No se encontraron discrepancias en columnas B y C."]}).to_excel(writer, sheet_name="SinDiscrepancias", index=False)
+
+    print(f"\n✅ Comparación completada. Archivo generado: {output_file}")
+
+# 🔽 Llamada principal
+if __name__ == "__main__":
+    comparar_excel_primera_hoja_con_transformacion(
+        carpeta_validacion=r'C:\Users\katejada\Desktop\Codigos y .Exe\ACH\validacion',
+        carpeta_referencia=r'C:\Users\katejada\Desktop\Codigos y .Exe\ACH\referencia',
+        columnas_clave_validacion=["DESCRIPCION", "CARGO"],
+        columnas_clave_referencia=["ID VALOR", "MONTO"]
+    )
