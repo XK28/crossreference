@@ -1,0 +1,239 @@
+import pandas as pd
+import os
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import inch
+
+# =======================
+# Definir rutas de carpetas
+# =======================
+ruta_validacion = "./validacion"
+ruta_referencia = "./referencia"
+
+# =======================
+# Buscar archivo de validación
+# =======================
+archivos_validacion = [f for f in os.listdir(ruta_validacion) if f.endswith('.xlsx')]
+if not archivos_validacion:
+    raise FileNotFoundError("No se encontró ningún archivo de validación en la carpeta especificada.")
+archivo_validacion = os.path.join(ruta_validacion, archivos_validacion[0])
+
+# =======================
+# Leer archivo de validación
+# =======================
+df_validar = pd.read_excel(archivo_validacion, engine="openpyxl", header=None, skiprows=8)
+df_validar = df_validar[[1, 4]]
+df_validar.columns = ['ID', 'CARGO']
+df_validar['ID'] = df_validar['ID'].astype(str).str.extract(r'(\\d{7})')[0]
+df_validar['CARGO'] = pd.to_numeric(df_validar['CARGO'], errors='coerce').fillna(0).map('{:.2f}'.format)
+df_validar['LLAVE'] = df_validar['ID'] + " | " + df_validar['CARGO']
+
+# =======================
+# Leer archivos de referencia
+# =======================
+archivos_referencia = [f for f in os.listdir(ruta_referencia) if f.endswith('.xlsx')]
+llaves_ref = set()
+for archivo in archivos_referencia:
+    try:
+        archivo_path = os.path.join(ruta_referencia, archivo)
+        df_ref = pd.read_excel(archivo_path, engine="openpyxl", header=None)
+        df_ref = df_ref[0].astype(str).str.split('|', expand=True)
+        df_ref[0] = df_ref[0].astype(str).str.extract(r'(\\d{7})')[0]
+        df_ref[4] = pd.to_numeric(df_ref[4], errors='coerce').fillna(0).map('{:.2f}'.format)
+        df_ref['LLAVE'] = df_ref[0] + " | " + df_ref[4]
+        llaves_ref.update(df_ref['LLAVE'].dropna().tolist())
+    except Exception as e:
+        print(f"Error procesando archivo {archivo}: {e}")
+
+# =======================
+# Comparar llaves
+# =======================
+llaves_no_encontradas = df_validar[~df_validar['LLAVE'].isin(llaves_ref)]
+
+# =======================
+# Solicitar nombre para el PDF
+# =======================
+pdf_name = input("Ingrese el nombre para el archivo PDF de salida (sin extensión): ")
+ruta_pdf = f"{pdf_name}.pdf"
+
+# =======================
+# Crear PDF con llaves no encontradas
+# =======================
+doc = SimpleDocTemplate(ruta_pdf, pagesize=letter)
+elements = []
+styles = getSampleStyleSheet()
+data = [[Paragraph("LLAVES NO ENCONTRADAS", styles['Heading4'])]]
+
+for llave in llaves_no_encontradas['LLAVE']:
+    data.append([Paragraph(str(llave), styles['Normal'])])
+
+tabla = Table(data, colWidths=[6.5 * inch])
+tabla.setStyle(TableStyle([
+    ('BACKGROUND', (0, 0), (-1, 0), colors.gray),
+    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+    ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+    ('VALIGN', (0, 0), (-1, -1), 'TOP')
+]))
+
+elements.append(tabla)
+doc.build(elements)
+print("PDF generado con llaves no encontradas:", ruta_pdf)
+=============================================================================================================
+import pandas as pd
+import os
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import inch
+
+# =======================
+# Leer archivo de validación
+# =======================
+df_validar = pd.read_excel("test validacion easy.xlsx", engine="openpyxl", header=None, skiprows=8)
+df_validar = df_validar[[1, 4]]  # columna 1 = ID, columna 4 = CARGO
+df_validar.columns = ['ID', 'CARGO']
+df_validar['ID'] = df_validar['ID'].astype(str).str.extract(r'(\d{7})')[0]
+df_validar['CARGO'] = pd.to_numeric(df_validar['CARGO'], errors='coerce').fillna(0).map('{:.2f}'.format)
+df_validar['LLAVE'] = df_validar['ID'] + " | " + df_validar['CARGO']
+
+# =======================
+# Leer archivo de referencia
+# =======================
+df_ref = pd.read_excel("etrp easy.xlsx", engine="openpyxl", header=None)
+df_ref = df_ref[0].astype(str).str.split('|', expand=True)
+df_ref[0] = df_ref[0].astype(str).str.extract(r'(\d{7})')[0]
+df_ref[4] = pd.to_numeric(df_ref[4], errors='coerce').fillna(0).map('{:.2f}'.format)
+df_ref['LLAVE'] = df_ref[0] + " | " + df_ref[4]
+
+# =======================
+# Comparar llaves
+# =======================
+llaves_no_encontradas = df_validar[~df_validar['LLAVE'].isin(df_ref['LLAVE'])]
+
+# =======================
+# Crear PDF con llaves no encontradas
+# =======================
+ruta_pdf = "llaves_no_encontradas.pdf"
+doc = SimpleDocTemplate(ruta_pdf, pagesize=letter)
+elements = []
+styles = getSampleStyleSheet()
+data = [[Paragraph("LLAVES NO ENCONTRADAS", styles['Heading4'])]]
+
+for llave in llaves_no_encontradas['LLAVE']:
+    data.append([Paragraph(str(llave), styles['Normal'])])
+
+tabla = Table(data, colWidths=[6.5 * inch])
+tabla.setStyle(TableStyle([
+    ('BACKGROUND', (0, 0), (-1, 0), colors.gray),
+    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+    ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+    ('VALIGN', (0, 0), (-1, -1), 'TOP')
+]))
+
+elements.append(tabla)
+doc.build(elements)
+
+print("PDF generado con llaves no encontradas:", ruta_pdf)
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+Codigo con proteccion de contraseña:
+
+import pandas as pd
+import os
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import inch
+
+# Función para leer archivos Excel con manejo de contraseña
+def leer_excel_con_contraseña(ruta_archivo):
+    try:
+        return pd.read_excel(ruta_archivo, engine="openpyxl", header=None)
+    except Exception as e:
+        if "password" in str(e).lower():
+            password = input(f"El archivo '{os.path.basename(ruta_archivo)}' está protegido. Ingrese la contraseña: ")
+            return pd.read_excel(ruta_archivo, engine="openpyxl", header=None, password=password)
+        else:
+            raise e
+
+# =======================
+# Leer archivo de validación desde carpeta
+# =======================
+validacion_dir = r"C:\Users\katejada\Desktop\Codigos y .Exe\ACH\validacion"
+archivos_validacion = [f for f in os.listdir(validacion_dir) if f.endswith('.xlsx')]
+if not archivos_validacion:
+    raise FileNotFoundError("No se encontró archivo de validación en la carpeta ./validacion")
+
+ruta_validacion = os.path.join(validacion_dir, archivos_validacion[0])
+df_validar = leer_excel_con_contraseña(ruta_validacion).iloc[8:, [1, 2]]  # Saltar 8 filas, columnas 1 y 2
+
+df_validar.columns = ['ID', 'CARGO']
+df_validar['ID'] = df_validar['ID'].astype(str).str.extract(r'(\d{7})')[0]
+df_validar['CARGO'] = pd.to_numeric(df_validar['CARGO'], errors='coerce').fillna(0).map('{:.2f}'.format)
+df_validar['LLAVE'] = df_validar['ID'] + " | " + df_validar['CARGO']
+
+# =======================
+# Leer archivos de referencia desde carpeta
+# =======================
+referencia_dir = r"C:\Users\katejada\Desktop\Codigos y .Exe\ACH\referencia"
+archivos_referencia = [f for f in os.listdir(referencia_dir) if f.endswith('.xlsx')]
+df_refs_list = []
+
+for archivo in archivos_referencia:
+    ruta_archivo = os.path.join(referencia_dir, archivo)
+    df = leer_excel_con_contraseña(ruta_archivo)
+    df_split = df[0].astype(str).str.split('|', expand=True)
+
+    if df_split.shape[1] > 4:
+        df_split[0] = df_split[0].astype(str).str.extract(r'(\d{7})')[0]
+        df_split[4] = pd.to_numeric(df_split[4], errors='coerce').fillna(0).map('{:.2f}'.format)
+        df_split['LLAVE'] = df_split[0] + " | " + df_split[4]
+        df_refs_list.append(df_split)
+    else:
+        print(f"Archivo {archivo} no tiene suficientes columnas después del split.")
+
+# Combinar todos los DataFrames en uno solo
+df_refs = pd.concat(df_refs_list, ignore_index=True)
+
+# =======================
+# Comparar llaves
+# =======================
+llaves_no_encontradas = df_validar[~df_validar['LLAVE'].isin(df_refs['LLAVE'])]
+
+# =======================
+# Solicitar nombre para el PDF
+# =======================
+pdf_name = input("Ingrese el nombre para el archivo PDF de salida (sin extensión): ")
+ruta_pdf = f"{pdf_name}.pdf"
+
+# =======================
+# Crear PDF con llaves no encontradas
+# =======================
+doc = SimpleDocTemplate(ruta_pdf, pagesize=letter)
+elements = []
+styles = getSampleStyleSheet()
+data = [[Paragraph("LLAVES NO ENCONTRADAS", styles['Heading4'])]]
+
+for llave in llaves_no_encontradas['LLAVE']:
+    data.append([Paragraph(str(llave), styles['Normal'])])
+
+tabla = Table(data, colWidths=[6.5 * inch])
+tabla.setStyle(TableStyle([
+    ('BACKGROUND', (0, 0), (-1, 0), colors.gray),
+    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+    ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+    ('VALIGN', (0, 0), (-1, -1), 'TOP')
+]))
+
+elements.append(tabla)
+doc.build(elements)
+print("PDF generado con llaves no encontradas:", ruta_pdf)
