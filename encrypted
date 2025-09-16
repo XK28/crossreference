@@ -1,0 +1,135 @@
+import os
+import io
+import msoffcrypto
+import pandas as pd
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import inch
+
+# =======================
+# Función para leer Excel cifrado + CSV
+# =======================
+def leer_archivo(ruta_archivo, skiprows=None):
+    """
+    Lee un archivo .xlsx o .csv. 
+    Si el archivo .xlsx está cifrado, solicita contraseña, lo descifra en memoria y lo lee.
+    Devuelve un DataFrame o None si falla.
+    """
+    ext = ruta_archivo.lower().split('.')[-1]
+    try:
+        if ext == 'csv':
+            return pd.read_csv(ruta_archivo, header=None, skiprows=skiprows)
+        elif ext in ('xlsx', 'xlsm', 'xls'):  
+            # Intentar leer sin contraseña
+            try:
+                return pd.read_excel(ruta_archivo, engine="openpyxl", header=None, skiprows=skiprows)
+            except Exception as e_no_pw:
+                # Si falla, puede ser por cifrado
+                print(f"Intento sin contraseña falló para {ruta_archivo}. Motivo: {e_no_pw}")
+                # Pedir contraseña
+                password = input(f"Ingrese la contraseña para abrir el archivo protegido '{os.path.basename(ruta_archivo)}': ")
+                # Abrir, descifrar en memoria
+                with open(ruta_archivo, 'rb') as f:
+                    office_file = msoffcrypto.OfficeFile(f)
+                    office_file.load_key(password=password)
+                    buffer = io.BytesIO()
+                    office_file.decrypt(buffer)
+                    buffer.seek(0)
+                    # Leer desde buffer
+                    # Para .xlsx/.xlsm usamos pandas con openpyxl
+                    return pd.read_excel(buffer, engine="openpyxl", header=None, skiprows=skiprows)
+        else:
+            print(f"Extensión no soportada: {ruta_archivo}")
+    except Exception as e:
+        print(f"Error al abrir/leer {ruta_archivo}: {e}")
+    return None
+
+# =======================
+# Función para obtener el primer archivo válido en una carpeta
+# =======================
+def leer_archivo_en_carpeta(carpeta, skiprows=None):
+    archivos = [f for f in os.listdir(carpeta) if f.lower().endswith(('.xlsx', '.xls', '.csv'))]
+    if not archivos:
+        raise FileNotFoundError(f"No se encontró archivo válido en la carpeta {carpeta}")
+    ruta = os.path.join(carpeta, archivos[0])
+    df = leer_archivo(ruta, skiprows=skiprows)
+    if df is None:
+        raise ValueError(f"No se pudo leer el archivo en {carpeta} (archivo: {archivos[0]})")
+    return df
+
+# =======================
+# Carpeta validación
+# =======================
+validacion_dir = r"C:\Users\katejada\Desktop\Codigos y .Exe\ACH\validacion"
+df_validar = leer_archivo_en_carpeta(validacion_dir, skiprows=8)
+
+# Procesar validación
+df_validar = df_validar[[1, 2]]
+df_validar.columns = ['ID', 'CARGO']
+df_validar['ID'] = df_validar['ID'].astype(str).str.extract(r'(\d{7})')[0]
+df_validar['CARGO'] = pd.to_numeric(df_validar['CARGO'], errors='coerce').fillna(0).map('{:.2f}'.format)
+df_validar['LLAVE'] = df_validar['ID'] + " | " + df_validar['CARGO']
+
+# =======================
+# Carpeta referencia
+# =======================
+referencia_dir = r"C:\Users\katejada\Desktop\Codigos y .Exe\ACH\referencia"
+archivos_referencia = [f for f in os.listdir(referencia_dir) if f.lower().endswith(('.xlsx', '.xls', '.csv'))]
+
+df_refs_list = []
+for archivo in archivos_referencia:
+    ruta_archivo = os.path.join(referencia_dir, archivo)
+    df = leer_archivo(ruta_archivo)
+    if df is not None:
+        try:
+            df_split = df[0].astype(str).str.split('|', expand=True)
+            if df_split.shape[1] > 4:
+                df_split[0] = df_split[0].astype(str).str.extract(r'(\d{7})')[0]
+                df_split[4] = pd.to_numeric(df_split[4], errors='coerce').fillna(0).map('{:.2f}'.format)
+                df_split['LLAVE'] = df_split[0] + " | " + df_split[4]
+                df_refs_list.append(df_split)
+            else:
+                print(f"Archivo {archivo} no tiene suficientes columnas después del split.")
+        except Exception as e:
+            print(f"Error procesando el archivo {archivo}: {e}")
+
+if not df_refs_list:
+    raise ValueError("No se pudieron procesar archivos de referencia válidos.")
+
+df_refs = pd.concat(df_refs_list, ignore_index=True)
+
+# =======================
+# Comparar llaves
+# =======================
+llaves_no_encontradas = df_validar[~df_validar['LLAVE'].isin(df_refs['LLAVE'])]
+
+# =======================
+# Crear PDF
+# =======================
+pdf_name = input("Ingrese el nombre para el archivo PDF de salida (sin extensión): ")
+ruta_pdf = f"{pdf_name}.pdf"
+
+doc = SimpleDocTemplate(ruta_pdf, pagesize=letter)
+elements = []
+styles = getSampleStyleSheet()
+
+data = [[Paragraph("LLAVES NO ENCONTRADAS", styles['Heading4'])]]
+for llave in llaves_no_encontradas['LLAVE']:
+    data.append([Paragraph(str(llave), styles['Normal'])])
+
+tabla = Table(data, colWidths=[6.5 * inch])
+tabla.setStyle(TableStyle([
+    ('BACKGROUND', (0, 0), (-1, 0), colors.gray),
+    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+    ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+    ('VALIGN', (0, 0), (-1, -1), 'TOP')
+]))
+
+elements.append(tabla)
+doc.build(elements)
+
+print("PDF generado con llaves no encontradas:", ruta_pdf)
