@@ -1,0 +1,190 @@
+import os
+import io
+import msoffcrypto
+import pandas as pd
+import tkinter as tk
+from tkinter import filedialog, simpledialog, messagebox
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import inch
+
+# ------------------------
+# Funciones de lectura de archivos con manejo de cifrado y CSV con muchos campos
+# ------------------------
+def leer_archivo(ruta_archivo, skiprows=None):
+    ext = ruta_archivo.lower().split('.')[-1]
+    try:
+        if ext == 'csv':
+            df = pd.read_csv(ruta_archivo, header=None, skiprows=skiprows, dtype=str, sep='\n', engine='python')
+            df_split = df[0].str.split('|', expand=True)
+            return df_split
+
+        elif ext in ('xlsx', 'xlsm', 'xls'):
+            try:
+                return pd.read_excel(ruta_archivo, engine="openpyxl", header=None, skiprows=skiprows)
+            except Exception as e_no_pw:
+                # Supone que puede estar cifrado
+                print(f"Intento sin contraseña falló para {ruta_archivo}. Motivo: {e_no_pw}")
+                password = simpledialog.askstring("Contraseña", 
+                                                  f"Ingrese la contraseña para abrir el archivo protegido:\n{os.path.basename(ruta_archivo)}",
+                                                  show='*')
+                if password is None:
+                    # Usuario canceló
+                    return None
+                with open(ruta_archivo, 'rb') as f:
+                    office_file = msoffcrypto.OfficeFile(f)
+                    office_file.load_key(password=password)
+                    buffer = io.BytesIO()
+                    office_file.decrypt(buffer)
+                    buffer.seek(0)
+                    return pd.read_excel(buffer, engine="openpyxl", header=None, skiprows=skiprows)
+        else:
+            messagebox.showwarning("Extensión no soportada", f"El archivo {ruta_archivo} tiene extensión no soportada.")
+    except Exception as e:
+        messagebox.showerror("Error al leer archivo", f"No se pudo leer {ruta_archivo}.\nDetalle: {e}")
+    return None
+
+def leer_archivo_en_carpeta(carpeta, skiprows=None):
+    archivos = [f for f in os.listdir(carpeta) if f.lower().endswith(('.xlsx', '.xls', '.xlsm', '.csv'))]
+    if not archivos:
+        raise FileNotFoundError(f"No se encontró archivo válido en la carpeta {carpeta}")
+    # Puedes permitir que el usuario seleccione uno si hay muchos, pero aquí tomo el primero
+    ruta = os.path.join(carpeta, archivos[0])
+    df = leer_archivo(ruta, skiprows=skiprows)
+    if df is None:
+        raise ValueError(f"No se pudo leer el archivo en {carpeta} (archivo: {archivos[0]})")
+    return df
+
+# ------------------------
+# Función que ejecuta todo el flujo, usada por la GUI
+# ------------------------
+def procesar(validacion_dir, referencia_dir, pdf_name):
+    # Leer validación
+    try:
+        df_validar = leer_archivo_en_carpeta(validacion_dir, skiprows=8)
+    except Exception as e:
+        messagebox.showerror("Error lectura validación", str(e))
+        return
+
+    if df_validar.shape[1] <= 2:
+        messagebox.showerror("Error formato validación", "El archivo de validación no tiene suficientes columnas (índices 1 y 2).")
+        return
+
+    df_validar = df_validar[[1, 2]].copy()
+    df_validar.columns = ['ID', 'CARGO']
+    df_validar['ID'] = df_validar['ID'].astype(str).str.extract(r'(\d{7})')[0]
+    df_validar['CARGO'] = pd.to_numeric(df_validar['CARGO'], errors='coerce').fillna(0).map('{:.2f}'.format)
+    df_validar['LLAVE'] = df_validar['ID'] + " | " + df_validar['CARGO']
+
+    # Leer referencias
+    archivos_referencia = [f for f in os.listdir(referencia_dir)
+                            if f.lower().endswith(('.xlsx', '.xls', '.xlsm', '.csv'))]
+    if not archivos_referencia:
+        messagebox.showerror("Error", f"No se encontraron archivos válidos en la carpeta de referencia: {referencia_dir}")
+        return
+
+    df_refs_list = []
+    for archivo in archivos_referencia:
+        ruta_archivo = os.path.join(referencia_dir, archivo)
+        df = leer_archivo(ruta_archivo)
+        if df is not None:
+            try:
+                # Columna 0 → ID
+                col0 = df[0].astype(str).str.extract(r'(\d{7})')[0]
+                # Columna 4 → valor numérico para comparación
+                if 4 in df.columns:
+                    col4 = pd.to_numeric(df[4], errors='coerce').fillna(0).map('{:.2f}'.format)
+                else:
+                    col4 = pd.Series(['0.00'] * len(df), index=df.index)
+
+                llave = col0 + " | " + col4
+                df_tmp = pd.DataFrame({'LLAVE': llave})
+                df_refs_list.append(df_tmp)
+            except Exception as e:
+                print(f"Error procesando {archivo}: {e}")
+                # Puede continuar con otros archivos
+
+    if not df_refs_list:
+        messagebox.showerror("Error referencias", "No se pudieron procesar archivos de referencia válidos.")
+        return
+
+    df_refs = pd.concat(df_refs_list, ignore_index=True)
+
+    # Comparar
+    llaves_no = df_validar[~df_validar['LLAVE'].isin(df_refs['LLAVE'])]
+
+    if llaves_no.empty:
+        messagebox.showinfo("Resultado", "Todas las llaves de validación se encontraron en las referencias.")
+    else:
+        # Generar PDF
+        ruta_pdf = pdf_name if pdf_name.lower().endswith('.pdf') else pdf_name + '.pdf'
+        try:
+            doc = SimpleDocTemplate(ruta_pdf, pagesize=letter)
+            elements = []
+            styles = getSampleStyleSheet()
+            data = [[Paragraph("LLAVES NO ENCONTRADAS", styles['Heading4'])]]
+            for llave in llaves_no['LLAVE']:
+                data.append([Paragraph(str(llave), styles['Normal'])])
+
+            tabla = Table(data, colWidths=[6.5 * inch])
+            tabla.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.gray),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP')
+            ]))
+            elements.append(tabla)
+            doc.build(elements)
+            messagebox.showinfo("PDF generado", f"PDF generado con llaves no encontradas:\n{ruta_pdf}")
+        except Exception as e:
+            messagebox.showerror("Error al generar PDF", str(e))
+
+# ------------------------
+# Interfaz gráfica mínima con Tkinter
+# ------------------------
+def main_gui():
+    root = tk.Tk()
+    root.title("Comparación Validación vs Referencia")
+    root.geometry("500x200")
+
+    # Variables para rutas y nombre PDF
+    validacion_dir = tk.StringVar()
+    referencia_dir = tk.StringVar()
+    pdf_name = tk.StringVar()
+
+    # Etiquetas y botones para elegir carpetas
+    lbl1 = tk.Label(root, text="Carpeta Validación:")
+    lbl1.grid(row=0, column=0, padx=10, pady=10, sticky='e')
+    entry_valid = tk.Entry(root, textvariable=validacion_dir, width=50)
+    entry_valid.grid(row=0, column=1, padx=5, pady=10)
+    btn_valid = tk.Button(root, text="Seleccionar", 
+                          command=lambda: validacion_dir.set(filedialog.askdirectory()))
+    btn_valid.grid(row=0, column=2, padx=5, pady=10)
+
+    lbl2 = tk.Label(root, text="Carpeta Referencia:")
+    lbl2.grid(row=1, column=0, padx=10, pady=10, sticky='e')
+    entry_ref = tk.Entry(root, textvariable=referencia_dir, width=50)
+    entry_ref.grid(row=1, column=1, padx=5, pady=10)
+    btn_ref = tk.Button(root, text="Seleccionar", 
+                        command=lambda: referencia_dir.set(filedialog.askdirectory()))
+    btn_ref.grid(row=1, column=2, padx=5, pady=10)
+
+    lbl3 = tk.Label(root, text="Nombre archivo PDF de salida:")
+    lbl3.grid(row=2, column=0, padx=10, pady=10, sticky='e')
+    entry_pdf = tk.Entry(root, textvariable=pdf_name, width=50)
+    entry_pdf.grid(row=2, column=1, padx=5, pady=10)
+    # (no botón para nombre PDF, lo pone el usuario directamente)
+
+    # Botón para ejecutar
+    btn_run = tk.Button(root, text="Procesar", 
+                        command=lambda: procesar(validacion_dir.get(), referencia_dir.get(), pdf_name.get()))
+    btn_run.grid(row=3, column=1, padx=5, pady=20)
+
+    root.mainloop()
+
+if __name__ == '__main__':
+    main_gui()
