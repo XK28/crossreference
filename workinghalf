@@ -1,0 +1,101 @@
+import pandas as pd
+import os
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import inch
+
+# Función para leer archivos Excel o CSV, con manejo de contraseña si es necesario
+def leer_archivo_referencia(ruta_archivo, skiprows=None):
+    try:
+        if ruta_archivo.endswith('.xlsx'):
+            return pd.read_excel(ruta_archivo, engine="openpyxl", header=None, skiprows=skiprows)
+        elif ruta_archivo.endswith('.csv'):
+            return pd.read_csv(ruta_archivo, header=None, skiprows=skiprows)
+    except Exception as e:
+        print(f"Error al abrir el archivo: {ruta_archivo}\n{e}")
+        if ruta_archivo.endswith('.xlsx'):
+            password = input("Ingrese la contraseña para abrir el archivo reservado: ")
+            try:
+                return pd.read_excel(ruta_archivo, engine="openpyxl", header=None, skiprows=skiprows, password=password)
+            except Exception as e2:
+                print(f"No se pudo abrir el archivo incluso con contraseña. Detalle: {e2}")
+        return None
+
+# =======================
+# Leer archivo de validación
+# =======================
+validacion_dir = r"C:\Users\katejada\Desktop\Codigos y .Exe\ACH\validacion"
+archivos_validacion = [f for f in os.listdir(validacion_dir) if f.endswith('.xlsx')]
+if not archivos_validacion:
+    raise FileNotFoundError("No se encontró archivo de validación en la carpeta ./validacion")
+
+ruta_validacion = os.path.join(validacion_dir, archivos_validacion[0])
+df_validar = leer_archivo_referencia(ruta_validacion, skiprows=8)
+df_validar = df_validar[[1, 2]]
+df_validar.columns = ['ID', 'CARGO']
+df_validar['ID'] = df_validar['ID'].astype(str).str.extract(r'(\d{7})')[0]
+df_validar['CARGO'] = pd.to_numeric(df_validar['CARGO'], errors='coerce').fillna(0).map('{:.2f}'.format)
+df_validar['LLAVE'] = df_validar['ID'] + " | " + df_validar['CARGO']
+
+# =======================
+# Leer archivos de referencia (.xlsx y .csv)
+# =======================
+referencia_dir = r"C:\Users\katejada\Desktop\Codigos y .Exe\ACH\referencia"
+archivos_referencia = [f for f in os.listdir(referencia_dir) if f.endswith('.xlsx') or f.endswith('.csv')]
+df_refs_list = []
+
+for archivo in archivos_referencia:
+    ruta_archivo = os.path.join(referencia_dir, archivo)
+    df = leer_archivo_referencia(ruta_archivo)
+    if df is not None:
+        try:
+            df_split = df[0].astype(str).str.split('|', expand=True)
+            if df_split.shape[1] > 4:
+                df_split[0] = df_split[0].astype(str).str.extract(r'(\d{7})')[0]
+                df_split[4] = pd.to_numeric(df_split[4], errors='coerce').fillna(0).map('{:.2f}'.format)
+                df_split['LLAVE'] = df_split[0] + " | " + df_split[4]
+                df_refs_list.append(df_split)
+            else:
+                print(f"Archivo {archivo} no tiene suficientes columnas después del split.")
+        except Exception as e:
+            print(f"Error procesando el archivo {archivo}: {e}")
+
+if not df_refs_list:
+    raise ValueError("No se pudieron procesar archivos de referencia válidos.")
+
+df_refs = pd.concat(df_refs_list, ignore_index=True)
+
+# =======================
+# Comparar llaves
+# =======================
+llaves_no_encontradas = df_validar[~df_validar['LLAVE'].isin(df_refs['LLAVE'])]
+
+# =======================
+# Crear PDF
+# =======================
+pdf_name = input("Ingrese el nombre para el archivo PDF de salida (sin extensión): ")
+ruta_pdf = f"{pdf_name}.pdf"
+
+doc = SimpleDocTemplate(ruta_pdf, pagesize=letter)
+elements = []
+styles = getSampleStyleSheet()
+data = [[Paragraph("LLAVES NO ENCONTRADAS", styles['Heading4'])]]
+
+for llave in llaves_no_encontradas['LLAVE']:
+    data.append([Paragraph(str(llave), styles['Normal'])])
+
+tabla = Table(data, colWidths=[6.5 * inch])
+tabla.setStyle(TableStyle([
+    ('BACKGROUND', (0, 0), (-1, 0), colors.gray),
+    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+    ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+    ('VALIGN', (0, 0), (-1, -1), 'TOP')
+]))
+
+elements.append(tabla)
+doc.build(elements)
+print("PDF generado con llaves no encontradas:", ruta_pdf)
