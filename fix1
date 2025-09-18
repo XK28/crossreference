@@ -1,5 +1,5 @@
-import pandas as pd
 import os
+import pandas as pd
 import msoffcrypto
 import io
 import tkinter as tk
@@ -38,48 +38,50 @@ password = simpledialog.askstring("Contraseña", "Ingrese la contraseña del arc
 # =======================
 def extraer_id(s):
     s = str(s)
-    # Regex correcto: \d{7}
     m = pd.Series(s).str.extract(r'(\d{7})')[0]
-    if pd.isna(m).all():
-        return None
+    if m.notna().any():
+        # Tomar primer valor no-nulo
+        return m.dropna().iloc[0]
     else:
-        # tomar el primer no nulo
-        return m.iloc[0]
+        return None
 
 # =======================
 # Leer archivo de validación
 # =======================
 validacion_dir = r"C:\\Users\\katejada\\Desktop\\Codigos y .Exe\\ACH\\validacion"
-archivos_validacion = [f for f in os.listdir(validacion_dir) if f.endswith(('.xlsx', '.xlsm', '.csv'))]
+archivos_validacion = [f for f in os.listdir(validacion_dir) if f.lower().endswith(('.xlsx', '.xlsm', '.csv'))]
 if not archivos_validacion:
     raise FileNotFoundError("No se encontró archivo de validación en la carpeta ./validacion")
 ruta_validacion = os.path.join(validacion_dir, archivos_validacion[0])
 
 # Cargar validación
 if ruta_validacion.lower().endswith('.csv'):
-    # CSV: separar por '|' si hay, o si no tienes campo cargo exacto, asumir columna con cargo
-    df_validar = pd.read_csv(ruta_validacion, header=None, skiprows=8, dtype=str, sep='|', engine='python', on_bad_lines='skip')
-    # A partir del CSV, cargo numérico se espera en la columna 4 (índice 4)
+    df_validar = pd.read_csv(
+        ruta_validacion, 
+        header=None, 
+        skiprows=8, 
+        dtype=str, 
+        sep='|', 
+        engine='python', 
+        on_bad_lines='skip'
+    )
 else:
-    # Excel o Excel protegido
+    # Excel
     try:
         with open(ruta_validacion, "rb") as f:
             office_file = msoffcrypto.OfficeFile(f)
             if password:
                 office_file.load_key(password=password)
-            # si no hay password, puede pasar None o fallar
             decrypted = io.BytesIO()
             office_file.decrypt(decrypted)
             decrypted.seek(0)
             df_validar = pd.read_excel(decrypted, engine="openpyxl", header=None, skiprows=8)
     except Exception as e:
-        # Fallback si no está cifrado o password incorrecto
-        # Intentar abrir sin contraseña
+        # Fallback sin contraseña
         df_validar = pd.read_excel(ruta_validacion, engine="openpyxl", header=None, skiprows=8)
 
 # Selección de columnas segun tipo_validacion
 if tipo_validacion == "puente":
-    # supongo que la COLUMNA “CARGO” en puente es índice 3; verificar con tus datos
     if df_validar.shape[1] <= 3:
         raise ValueError("El archivo de validación tipo puente no tiene suficientes columnas.")
     col_id_valid = df_validar[1]
@@ -90,30 +92,37 @@ else:  # tipo “ach”
     col_id_valid = df_validar[1]
     col_cargo_valid = df_validar[2]
 
-# Extraer ID
-IDs_valid = col_id_valid.astype(str).apply(lambda s: extraer_id(s))
-# Procesar CARGO
+# Extraer ID y formatear CARGO
+IDs_valid = col_id_valid.astype(str).apply(extraer_id)
 cargos_valid = pd.to_numeric(col_cargo_valid, errors='coerce').fillna(0).map('{:.2f}'.format)
 
 df_validar_proc = pd.DataFrame({
     'LLAVE': IDs_valid + " | " + cargos_valid
 })
 
+# Opcional: ver muestras para depurar
+print("Muestras validación llaves:", df_validar_proc['LLAVE'].head(10).tolist())
+
 # =======================
 # Leer archivos de referencia
 # =======================
 referencia_dir = r"C:\\Users\\katejada\\Desktop\\Codigos y .Exe\\ACH\\referencia"
-archivos_referencia = [f for f in os.listdir(referencia_dir) if f.endswith(('.xlsx', '.xlsm', '.csv'))]
+archivos_referencia = [f for f in os.listdir(referencia_dir) if f.lower().endswith(('.xlsx', '.xlsm', '.csv'))]
 df_refs_list = []
 
 for archivo in archivos_referencia:
     ruta_archivo = os.path.join(referencia_dir, archivo)
     try:
         if archivo.lower().endswith('.csv'):
-            # Leer CSV con sep='|'
-            df_ref = pd.read_csv(ruta_archivo, header=None, dtype=str, sep='|', engine='python', on_bad_lines='skip')
+            df_ref = pd.read_csv(
+                ruta_archivo,
+                header=None,
+                dtype=str,
+                sep='|',
+                engine='python',
+                on_bad_lines='skip'
+            )
         else:
-            # Excel
             with open(ruta_archivo, "rb") as f:
                 office_file = msoffcrypto.OfficeFile(f)
                 if password:
@@ -121,35 +130,56 @@ for archivo in archivos_referencia:
                 decrypted = io.BytesIO()
                 office_file.decrypt(decrypted)
                 decrypted.seek(0)
-                df_ref = pd.read_excel(decrypted, engine="openpyxl", header=None)
-    except Exception as e:
-        # si no se puede desencriptar o leer, intentar sin password
-        try:
-            df_ref = pd.read_excel(ruta_archivo, engine="openpyxl", header=None)
-        except Exception as e2:
-            print(f"Error procesando referencia {archivo}: {e2}")
+                df_ref_original = pd.read_excel(decrypted, engine="openpyxl", header=None)
+            # Hacer split de la columna 0 si las columnas son pocas
+            df_ref = df_ref_original
+            if df_ref.shape[1] <= 4:
+                # suponer que df_ref[0] contiene la cadena con '|'
+                df_ref = df_ref[0].astype(str).str.split('|', expand=True)
+
+        # Ahora df_ref tiene varias columnas después del split, al menos la columna 0
+        # Chequeo columna 0
+        if 0 not in df_ref.columns:
+            print(f"Referencia {archivo} no tiene columna 0 después del split – ignorada")
             continue
 
-    # Procesar df_ref para extraer ID y campo cargo (campo índice 4 en CSV/ después del split)
-    # Asegurar que df_ref tiene al menos 5 columnas
-    if df_ref.shape[1] <= 4:
-        # No tiene columna 4, lo ignoramos
-        print(f"Referencia {archivo} ignorada por no tener suficientes columnas")
-        continue
+        # Extraer ID
+        col_id_ref = df_ref[0].astype(str).apply(extraer_id)
 
-    col_id_ref = df_ref[0].astype(str).apply(lambda s: extraer_id(s))
-    col_cargo_ref = pd.to_numeric(df_ref[4], errors='coerce').fillna(0).map('{:.2f}'.format)
+        # Elegir columna cargo (campo numérico) - columna 4 si existe, sino fallback
+        if 4 in df_ref.columns:
+            col_cargo_ref = pd.to_numeric(df_ref[4], errors='coerce').fillna(0).map('{:.2f}'.format)
+        else:
+            # buscar alguna columna numérica válida
+            found = False
+            for j in range(1, df_ref.shape[1]):
+                serie = pd.to_numeric(df_ref[j], errors='coerce')
+                if serie.notna().any():
+                    col_cargo_ref = serie.fillna(0).map('{:.2f}'.format)
+                    print(f"Referencia {archivo}: usando columna {j} como cargo de respaldo")
+                    found = True
+                    break
+            if not found:
+                col_cargo_ref = pd.Series(['0.00'] * len(df_ref), index=df_ref.index)
+                print(f"Referencia {archivo}: no se encontró columna cargo válida, usando 0.00 por defecto")
 
-    df_ref_proc = pd.DataFrame({
-        'LLAVE': col_id_ref + " | " + col_cargo_ref
-    })
+        df_ref_proc = pd.DataFrame({
+            'LLAVE': col_id_ref + " | " + col_cargo_ref
+        })
 
-    df_refs_list.append(df_ref_proc)
+        df_refs_list.append(df_ref_proc)
+
+    except Exception as e:
+        print(f"Error procesando referencia {archivo}: {e}")
+        # continuar con los demás archivos
 
 if not df_refs_list:
     raise ValueError("No se pudieron procesar archivos de referencia válidos.")
 
 df_refs_concat = pd.concat(df_refs_list, ignore_index=True)
+
+# Mostrar muestras para depurar
+print("Muestras referencia llaves:", df_refs_concat['LLAVE'].head(10).tolist())
 
 # =======================
 # Comparar llaves
@@ -167,9 +197,6 @@ ruta_pdf = f"{pdf_name}.pdf"
 # =======================
 # Crear PDF con llaves no encontradas
 # =======================
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
-from reportlab.lib.styles import getSampleStyleSheet
-
 doc = SimpleDocTemplate(ruta_pdf, pagesize=letter)
 elements = []
 styles = getSampleStyleSheet()
@@ -191,3 +218,11 @@ elements.append(tabla)
 doc.build(elements)
 
 print("PDF generado con llaves no encontradas:", ruta_pdf)
+
+
+    
+       
+
+
+   
+
