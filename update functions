@@ -5,7 +5,7 @@ import io
 import tkinter as tk
 from tkinter import simpledialog
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
@@ -34,21 +34,34 @@ ventana.mainloop()
 password = simpledialog.askstring("Contraseña", "Ingrese la contraseña del archivo Excel (dejar vacío si no tiene):")
 
 # =======================
-# Función auxiliar: extraer ID de justamente 7 dígitos numéricos al inicio (columna B)
+# Función auxiliar: extraer ID = primeros 7 caracteres si todos son dígitos
 # =======================
-def extraer_id_7(s):
-    s = str(s)
-    # Buscar los primeros 7 dígitos consecutivos en la cadena
-    m = pd.Series(s).str.extract(r'(\d{7})')[0]
-    if m.notna().all():
-        # todos? queremos que la fila tenga un ID válido: al menos uno no-nulo
-        return m.iloc[0]
+def extraer_id_7_inicio(s):
+    s = str(s).strip()
+    if len(s) < 7:
+        return None
+    primeros7 = s[:7]
+    if primeros7.isdigit():
+        return primeros7
     else:
-        # Si no se encuentra un grupo de 7 dígitos, devolvemos None para ignorar
         return None
 
 # =======================
-# Leer archivo de validación
+# Función auxiliar: elegir monto entre columna C o D
+# =======================
+def elegir_monto(c, d):
+    try:
+        mc = float(c)
+        return mc
+    except Exception:
+        try:
+            md = float(d)
+            return md
+        except Exception:
+            return None
+
+# =======================
+# Leer validación
 # =======================
 validacion_dir = r"C:\\Users\\katejada\\Desktop\\Codigos y .Exe\\ACH\\validacion"
 archivos_validacion = [f for f in os.listdir(validacion_dir) if f.lower().endswith(('.xlsx', '.xlsm', '.csv'))]
@@ -56,7 +69,6 @@ if not archivos_validacion:
     raise FileNotFoundError("No se encontró archivo de validación en la carpeta ./validacion")
 ruta_validacion = os.path.join(validacion_dir, archivos_validacion[0])
 
-# Cargar validación
 if ruta_validacion.lower().endswith('.csv'):
     df_validar = pd.read_csv(
         ruta_validacion,
@@ -87,50 +99,31 @@ else:
             df_validar = pd.read_excel(ruta_validacion, engine="openpyxl", header=None)
 
 # =======================
-# Procesar validación: iniciar desde fila 1, ignorar filas sin ID válido o monto válido
+# Procesar validación: fila 1+, ignorar filas si ID no válido o monto no válido
 # =======================
-# Empieza desde fila 1 (es decir, descartar fila 0 si lo deseas)
 if len(df_validar) > 1:
     df_valid = df_validar.iloc[1:].reset_index(drop=True)
 else:
     df_valid = df_validar.copy()
 
-# La columna B corresponde al índice 1, columna C al índice 2, columna D al índice 3
+# Columnas: B = índice 1, C = índice 2, D = índice 3
 col_B = df_valid[1].astype(str)
 col_C = df_valid[2] if df_valid.shape[1] > 2 else pd.Series([None]*len(df_valid))
 col_D = df_valid[3] if df_valid.shape[1] > 3 else pd.Series([None]*len(df_valid))
 
-ids = col_B.apply(extraer_id_7)
-# Monto: usar columna C si tiene dato (no null / no NaN / no vacía), sino columna D
-def elegir_monto(c, d):
-    try:
-        # primero c
-        mc = float(c)
-        return mc
-    except Exception:
-        try:
-            md = float(d)
-            return md
-        except Exception:
-            return None
-
+ids = col_B.apply(extraer_id_7_inicio)
 montos = [ elegir_monto(c, d) for c, d in zip(col_C, col_D) ]
 montos_series = pd.Series(montos).map(lambda x: "{:.2f}".format(x) if x is not None else None)
 
-# Ahora filtrar filas válidas: ID no None, monto no None
-df_valid_temp = pd.DataFrame({
-    'ID': ids,
-    'MONTO': montos_series
-})
+# Filtrar filas válidas
+df_valid_temp = pd.DataFrame({'ID': ids, 'MONTO': montos_series})
 df_valid_temp = df_valid_temp[df_valid_temp['ID'].notna() & df_valid_temp['MONTO'].notna()].reset_index(drop=True)
 
-# Crear llave de validación
-df_validar_proc = pd.DataFrame({
-    'LLAVE': df_valid_temp['ID'] + " | " + df_valid_temp['MONTO']
-})
+# Crear llaves de validación
+df_validar_proc = pd.DataFrame({'LLAVE': df_valid_temp['ID'] + " | " + df_valid_temp['MONTO']})
 
 # =======================
-# Leer archivos de referencia
+# Leer referencias
 # =======================
 referencia_dir = r"C:\\Users\\katejada\\Desktop\\Codigos y .Exe\\ACH\\referencia"
 archivos_referencia = [f for f in os.listdir(referencia_dir) if f.lower().endswith(('.xlsx', '.xlsm', '.csv'))]
@@ -170,31 +163,21 @@ for archivo in archivos_referencia:
             else:
                 df_ref = df_ref_original
 
-        # Verificar que columna B y columna C o D existan: B → índice 1, C → 2, D → 3
-        # Extraer ID igual: primeros 7 dígitos de columna B
+        # Procesar referencia - extraer ID sólo si los primeros 7 caracteres de columna B son dígitos
         if 1 not in df_ref.columns:
             continue
         colB_ref = df_ref[1].astype(str)
-        # Columna C o D montos
         colC_ref = df_ref[2] if df_ref.shape[1] > 2 else pd.Series([None]*len(df_ref))
         colD_ref = df_ref[3] if df_ref.shape[1] > 3 else pd.Series([None]*len(df_ref))
 
-        ids_ref = colB_ref.apply(extraer_id_7)
+        ids_ref = colB_ref.apply(extraer_id_7_inicio)
         montos_ref = [ elegir_monto(c, d) for c, d in zip(colC_ref, colD_ref) ]
         montos_ref_series = pd.Series(montos_ref).map(lambda x: "{:.2f}".format(x) if x is not None else None)
 
-        # Filtrar filas válidas
-        df_ref_temp = pd.DataFrame({
-            'ID': ids_ref,
-            'MONTO': montos_ref_series
-        })
+        df_ref_temp = pd.DataFrame({'ID': ids_ref, 'MONTO': montos_ref_series})
         df_ref_temp = df_ref_temp[df_ref_temp['ID'].notna() & df_ref_temp['MONTO'].notna()].reset_index(drop=True)
 
-        # Crear llave de referencia
-        df_ref_proc = pd.DataFrame({
-            'LLAVE': df_ref_temp['ID'] + " | " + df_ref_temp['MONTO']
-        })
-
+        df_ref_proc = pd.DataFrame({'LLAVE': df_ref_temp['ID'] + " | " + df_ref_temp['MONTO']})
         df_refs_list.append(df_ref_proc)
 
     except Exception:
@@ -206,33 +189,27 @@ if not df_refs_list:
 df_refs_concat = pd.concat(df_refs_list, ignore_index=True)
 
 # =======================
-# Comparar llaves: encontradas y no encontradas
+# Comparar llaves
 # =======================
-# Lista de llaves validas
 llaves_validas = set(df_validar_proc['LLAVE'])
 llaves_referencia = set(df_refs_concat['LLAVE'])
 
-# Llaves encontradas = intersección
 llaves_encontradas = sorted(list(llaves_validas & llaves_referencia))
-# Llaves no encontradas = las de validación que no están en referencia
 llaves_no_encontradas = sorted(list(llaves_validas - llaves_referencia))
 
 # =======================
-# Interfaz gráfica para nombre del PDF
+# Crear PDF con tablas NO encontradas y encontradas
 # =======================
 pdf_name = simpledialog.askstring("Nombre del PDF", "Ingrese el nombre para el archivo PDF de salida (sin extensión):")
 if not pdf_name:
     raise ValueError("Debe ingresar un nombre para el archivo PDF.")
 ruta_pdf = f"{pdf_name}.pdf"
 
-# =======================
-# Crear PDF con llaves NO encontradas primero y luego llaves encontradas
-# =======================
 doc = SimpleDocTemplate(ruta_pdf, pagesize=letter)
 elements = []
 styles = getSampleStyleSheet()
 
-# Tabla de encabezado: NO ENCONTRADAS
+# Tabla NO ENCONTRADAS
 data_no = [[Paragraph("LLAVES NO ENCONTRADAS", styles['Heading4'])]]
 for llave in llaves_no_encontradas:
     data_no.append([Paragraph(str(llave), styles['Normal'])])
@@ -246,14 +223,11 @@ tabla_no.setStyle(TableStyle([
     ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
     ('VALIGN', (0, 0), (-1, -1), 'TOP')
 ]))
-
 elements.append(tabla_no)
 
-# Agregar espacio entre tablas
-from reportlab.platypus import Spacer
-elements.append( Spacer(1, 0.3 * inch) )
+elements.append(Spacer(1, 0.3 * inch))
 
-# Tabla de LLAVES ENCONTRADAS
+# Tabla ENCONTRADAS
 data_si = [[Paragraph("LLAVES ENCONTRADAS", styles['Heading4'])]]
 for llave in llaves_encontradas:
     data_si.append([Paragraph(str(llave), styles['Normal'])])
@@ -267,10 +241,8 @@ tabla_si.setStyle(TableStyle([
     ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
     ('VALIGN', (0, 0), (-1, -1), 'TOP')
 ]))
-
 elements.append(tabla_si)
 
-# Construir pdf
 doc.build(elements)
 
-print("PDF generado con llaves no encontradas y encontradas:", ruta_pdf)
+print("PDF generado con llaves encontradas y no encontradas:", ruta_pdf)
