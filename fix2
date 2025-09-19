@@ -48,10 +48,7 @@ def extraer_id(s):
 # Leer archivo de validación
 # =======================
 validacion_dir = r"C:\\Users\\katejada\\Desktop\\Codigos y .Exe\\ACH\\validacion"
-archivos_validacion = [
-    f for f in os.listdir(validacion_dir)
-    if f.lower().endswith(('.xlsx', '.xlsm', '.csv'))
-]
+archivos_validacion = [f for f in os.listdir(validacion_dir) if f.lower().endswith(('.xlsx', '.xlsm', '.csv'))]
 if not archivos_validacion:
     raise FileNotFoundError("No se encontró archivo de validación en la carpeta ./validacion")
 ruta_validacion = os.path.join(validacion_dir, archivos_validacion[0])
@@ -67,23 +64,34 @@ if ruta_validacion.lower().endswith('.csv'):
         on_bad_lines='skip'
     )
 else:
-    try:
-        with open(ruta_validacion, "rb") as f:
-            office_file = msoffcrypto.OfficeFile(f)
-            if password:
-                office_file.load_key(password=password)
-            decrypted = io.BytesIO()
-            office_file.decrypt(decrypted)
-            decrypted.seek(0)
-            df_validar = pd.read_excel(decrypted, engine="openpyxl", header=None)
-    except Exception:
-        # Fallback sin contraseña si algo falla
-        df_validar = pd.read_excel(ruta_validacion, engine="openpyxl", header=None)
+    # Excel
+    with open(ruta_validacion, "rb") as f:
+        office_file = msoffcrypto.OfficeFile(f)
+        try:
+            enc = office_file.is_encrypted()
+        except Exception:
+            # Si no se puede determinar, asumir que puede estar cifrado solo si se dio contraseña
+            enc = bool(password)
+        if enc:
+            try:
+                if password:
+                    office_file.load_key(password=password)
+                decrypted = io.BytesIO()
+                office_file.decrypt(decrypted)
+                decrypted.seek(0)
+                df_validar = pd.read_excel(decrypted, engine="openpyxl", header=None)
+            except Exception:
+                # Si falla desencriptar, intentar sin cifrado
+                df_validar = pd.read_excel(ruta_validacion, engine="openpyxl", header=None)
+        else:
+            # No está cifrado
+            df_validar = pd.read_excel(ruta_validacion, engine="openpyxl", header=None)
 
 # =======================
 # Procesar validación: iniciar desde fila 1, ignorar filas sin ID o CARGO
 # =======================
 
+# Empezar desde la fila 1 (índice 1); si el df tiene más de una fila
 if len(df_validar) > 1:
     df_valid = df_validar.iloc[1:].reset_index(drop=True)
 else:
@@ -105,7 +113,7 @@ else:  # tipo “ach”
 IDs_valid = col_id_valid.astype(str).apply(extraer_id)
 cargos_valid = pd.to_numeric(col_cargo_valid, errors='coerce').fillna(0).map('{:.2f}'.format)
 
-# Filtrar filas válidas
+# Filtrar filas sin ID válido o sin CARGO válido
 df_valid_temp = pd.DataFrame({
     'ID': IDs_valid,
     'CARGO': cargos_valid
@@ -121,10 +129,7 @@ df_validar_proc = pd.DataFrame({
 # Leer archivos de referencia
 # =======================
 referencia_dir = r"C:\\Users\\katejada\\Desktop\\Codigos y .Exe\\ACH\\referencia"
-archivos_referencia = [
-    f for f in os.listdir(referencia_dir)
-    if f.lower().endswith(('.xlsx', '.xlsm', '.csv'))
-]
+archivos_referencia = [f for f in os.listdir(referencia_dir) if f.lower().endswith(('.xlsx', '.xlsm', '.csv'))]
 df_refs_list = []
 
 for archivo in archivos_referencia:
@@ -142,25 +147,41 @@ for archivo in archivos_referencia:
         else:
             with open(ruta_archivo, "rb") as f:
                 office_file = msoffcrypto.OfficeFile(f)
-                if password:
-                    office_file.load_key(password=password)
-                decrypted = io.BytesIO()
-                office_file.decrypt(decrypted)
-                decrypted.seek(0)
-                df_ref_original = pd.read_excel(decrypted, engine="openpyxl", header=None)
+                try:
+                    enc_ref = office_file.is_encrypted()
+                except Exception:
+                    enc_ref = bool(password)
+                if enc_ref:
+                    try:
+                        if password:
+                            office_file.load_key(password=password)
+                        decrypted_ref = io.BytesIO()
+                        office_file.decrypt(decrypted_ref)
+                        decrypted_ref.seek(0)
+                        df_ref_original = pd.read_excel(decrypted_ref, engine="openpyxl", header=None)
+                    except Exception:
+                        # si desencriptar falla, fallback
+                        df_ref_original = pd.read_excel(ruta_archivo, engine="openpyxl", header=None)
+                else:
+                    df_ref_original = pd.read_excel(ruta_archivo, engine="openpyxl", header=None)
+
             if df_ref_original.shape[1] <= 4:
                 df_ref = df_ref_original[0].astype(str).str.split('|', expand=True)
             else:
                 df_ref = df_ref_original
 
+        # Verificar que columna 0 exista
         if 0 not in df_ref.columns:
             continue
 
+        # Extraer ID
         col_id_ref = df_ref[0].astype(str).apply(extraer_id)
 
+        # Determinar columna cargo
         if 4 in df_ref.columns:
             col_cargo_ref = pd.to_numeric(df_ref[4], errors='coerce').fillna(0).map('{:.2f}'.format)
         else:
+            # fallback: buscar otra columna numérica si es posible
             found = False
             for j in range(1, df_ref.shape[1]):
                 serie = pd.to_numeric(df_ref[j], errors='coerce')
@@ -178,6 +199,7 @@ for archivo in archivos_referencia:
         df_refs_list.append(df_ref_proc)
 
     except Exception:
+        # simplemente continuar con los demás archivos si falla este
         continue
 
 if not df_refs_list:
