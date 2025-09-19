@@ -3,3 +3,11 @@ Traceback (most recent call last):
   File "C:\Users\katejada\Desktop\Codigos y .Exe\ACH\cross3.py", line 150, in <module>
     raise ValueError("No se pudieron procesar archivos de referencia válidos.")
 ValueError: No se pudieron procesar archivos de referencia válidos.
+
+
+error 2 
+Error procesando referencia hard.xlsx: Unencrypted document
+Traceback (most recent call last):
+  File "C:\Users\katejada\Desktop\Codigos y .Exe\ACH\cross3.py", line 195, in <module>
+    raise ValueError("No se pudieron procesar archivos de referencia válidos.")
+ValueError: No se pudieron procesar archivos de referencia válidos.
