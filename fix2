@@ -1,0 +1,224 @@
+import os
+import pandas as pd
+import msoffcrypto
+import io
+import tkinter as tk
+from tkinter import simpledialog
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import inch
+
+# =======================
+# Interfaz gráfica para selección de tipo de validación
+# =======================
+tipo_validacion = None
+
+def seleccionar_tipo(tipo):
+    global tipo_validacion
+    tipo_validacion = tipo
+    ventana.destroy()
+
+ventana = tk.Tk()
+ventana.title("Seleccionar tipo de validación")
+ventana.geometry("300x120")
+tk.Label(ventana, text="Seleccione el tipo de validación:").pack(pady=10)
+tk.Button(ventana, text="ACH XPRESS", width=20, command=lambda: seleccionar_tipo("ach")).pack(pady=5)
+tk.Button(ventana, text="Cuenta Puente", width=20, command=lambda: seleccionar_tipo("puente")).pack(pady=5)
+ventana.mainloop()
+
+# =======================
+# Interfaz gráfica para contraseña
+# =======================
+password = simpledialog.askstring("Contraseña", "Ingrese la contraseña del archivo Excel (dejar vacío si no tiene):")
+
+# =======================
+# Función auxiliar: extraer ID de 7 dígitos
+# =======================
+def extraer_id(s):
+    s = str(s)
+    m = pd.Series(s).str.extract(r'(\d{7})')[0]
+    if m.notna().any():
+        return m.dropna().iloc[0]
+    else:
+        return None
+
+# =======================
+# Leer archivo de validación
+# =======================
+validacion_dir = r"C:\\Users\\katejada\\Desktop\\Codigos y .Exe\\ACH\\validacion"
+archivos_validacion = [
+    f for f in os.listdir(validacion_dir)
+    if f.lower().endswith(('.xlsx', '.xlsm', '.csv'))
+]
+if not archivos_validacion:
+    raise FileNotFoundError("No se encontró archivo de validación en la carpeta ./validacion")
+ruta_validacion = os.path.join(validacion_dir, archivos_validacion[0])
+
+# Cargar validación
+if ruta_validacion.lower().endswith('.csv'):
+    df_validar = pd.read_csv(
+        ruta_validacion,
+        header=None,
+        dtype=str,
+        sep='|',
+        engine='python',
+        on_bad_lines='skip'
+    )
+else:
+    try:
+        with open(ruta_validacion, "rb") as f:
+            office_file = msoffcrypto.OfficeFile(f)
+            if password:
+                office_file.load_key(password=password)
+            decrypted = io.BytesIO()
+            office_file.decrypt(decrypted)
+            decrypted.seek(0)
+            df_validar = pd.read_excel(decrypted, engine="openpyxl", header=None)
+    except Exception:
+        # Fallback sin contraseña si algo falla
+        df_validar = pd.read_excel(ruta_validacion, engine="openpyxl", header=None)
+
+# =======================
+# Procesar validación: iniciar desde fila 1, ignorar filas sin ID o CARGO
+# =======================
+
+if len(df_validar) > 1:
+    df_valid = df_validar.iloc[1:].reset_index(drop=True)
+else:
+    df_valid = df_validar.copy()
+
+# Selección de columnas según tipo_validacion
+if tipo_validacion == "puente":
+    if df_valid.shape[1] <= 3:
+        raise ValueError("El archivo de validación tipo puente no tiene suficientes columnas.")
+    col_id_valid = df_valid[1]
+    col_cargo_valid = df_valid[3]
+else:  # tipo “ach”
+    if df_valid.shape[1] <= 2:
+        raise ValueError("El archivo de validación tipo ACH no tiene suficientes columnas.")
+    col_id_valid = df_valid[1]
+    col_cargo_valid = df_valid[2]
+
+# Extraer ID y formatear CARGO
+IDs_valid = col_id_valid.astype(str).apply(extraer_id)
+cargos_valid = pd.to_numeric(col_cargo_valid, errors='coerce').fillna(0).map('{:.2f}'.format)
+
+# Filtrar filas válidas
+df_valid_temp = pd.DataFrame({
+    'ID': IDs_valid,
+    'CARGO': cargos_valid
+})
+df_valid_temp = df_valid_temp[df_valid_temp['ID'].notna() & df_valid_temp['CARGO'].notna()].reset_index(drop=True)
+
+# Crear llaves de validación
+df_validar_proc = pd.DataFrame({
+    'LLAVE': df_valid_temp['ID'] + " | " + df_valid_temp['CARGO']
+})
+
+# =======================
+# Leer archivos de referencia
+# =======================
+referencia_dir = r"C:\\Users\\katejada\\Desktop\\Codigos y .Exe\\ACH\\referencia"
+archivos_referencia = [
+    f for f in os.listdir(referencia_dir)
+    if f.lower().endswith(('.xlsx', '.xlsm', '.csv'))
+]
+df_refs_list = []
+
+for archivo in archivos_referencia:
+    ruta_archivo = os.path.join(referencia_dir, archivo)
+    try:
+        if archivo.lower().endswith('.csv'):
+            df_ref = pd.read_csv(
+                ruta_archivo,
+                header=None,
+                dtype=str,
+                sep='|',
+                engine='python',
+                on_bad_lines='skip'
+            )
+        else:
+            with open(ruta_archivo, "rb") as f:
+                office_file = msoffcrypto.OfficeFile(f)
+                if password:
+                    office_file.load_key(password=password)
+                decrypted = io.BytesIO()
+                office_file.decrypt(decrypted)
+                decrypted.seek(0)
+                df_ref_original = pd.read_excel(decrypted, engine="openpyxl", header=None)
+            if df_ref_original.shape[1] <= 4:
+                df_ref = df_ref_original[0].astype(str).str.split('|', expand=True)
+            else:
+                df_ref = df_ref_original
+
+        if 0 not in df_ref.columns:
+            continue
+
+        col_id_ref = df_ref[0].astype(str).apply(extraer_id)
+
+        if 4 in df_ref.columns:
+            col_cargo_ref = pd.to_numeric(df_ref[4], errors='coerce').fillna(0).map('{:.2f}'.format)
+        else:
+            found = False
+            for j in range(1, df_ref.shape[1]):
+                serie = pd.to_numeric(df_ref[j], errors='coerce')
+                if serie.notna().any():
+                    col_cargo_ref = serie.fillna(0).map('{:.2f}'.format)
+                    found = True
+                    break
+            if not found:
+                col_cargo_ref = pd.Series(['0.00'] * len(df_ref), index=df_ref.index)
+
+        df_ref_proc = pd.DataFrame({
+            'LLAVE': col_id_ref + " | " + col_cargo_ref
+        })
+
+        df_refs_list.append(df_ref_proc)
+
+    except Exception:
+        continue
+
+if not df_refs_list:
+    raise ValueError("No se pudieron procesar archivos de referencia válidos.")
+
+df_refs_concat = pd.concat(df_refs_list, ignore_index=True)
+
+# =======================
+# Comparar llaves
+# =======================
+llaves_no_encontradas = df_validar_proc[~df_validar_proc['LLAVE'].isin(df_refs_concat['LLAVE'])]
+
+# =======================
+# Interfaz gráfica para nombre del PDF
+# =======================
+pdf_name = simpledialog.askstring("Nombre del PDF", "Ingrese el nombre para el archivo PDF de salida (sin extensión):")
+if not pdf_name:
+    raise ValueError("Debe ingresar un nombre para el archivo PDF.")
+ruta_pdf = f"{pdf_name}.pdf"
+
+# =======================
+# Crear PDF con llaves no encontradas
+# =======================
+doc = SimpleDocTemplate(ruta_pdf, pagesize=letter)
+elements = []
+styles = getSampleStyleSheet()
+
+data = [[Paragraph("LLAVES NO ENCONTRADAS", styles['Heading4'])]]
+for llave in llaves_no_encontradas['LLAVE']:
+    data.append([Paragraph(str(llave), styles['Normal'])])
+
+tabla = Table(data, colWidths=[6.5 * inch])
+tabla.setStyle(TableStyle([
+    ('BACKGROUND', (0, 0), (-1, 0), colors.skyblue),
+    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+    ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+    ('VALIGN', (0, 0), (-1, -1), 'TOP')
+]))
+elements.append(tabla)
+doc.build(elements)
+
+print("PDF generado con llaves no encontradas:", ruta_pdf)
