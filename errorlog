@@ -1,3 +1,10 @@
+carpeta_salida = r"\\ntappama01-c01\Herramienta Usuario Final en Ejecucion\REVISION XPRESS"
+if not os.path.exists(carpeta_salida):
+    os.makedirs(carpeta_salida, exist_ok=True)
+ruta_pdf = os.path.join(carpeta_salida, f"{pdf_name}.pdf")
+
+
+
 \\ntappama01-c01\Herramienta Usuario Final en Ejecucion\REVISION XPRESS
 
 carpeta_salida = r"\\ntappama01-c01\Herramienta Usuario Final en Ejecucion\REVISION XPRESS"
