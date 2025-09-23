@@ -1,0 +1,22 @@
+# -----------------------
+# Login de usuario
+# -----------------------
+login_window = tk.Tk()
+login_window.withdraw()  # Oculta la ventana principal
+
+# Diccionario de usuarios válidos
+usuarios_validos = {
+    'madeleo': 'Security1st',
+    'itejada': 'goadmiN2'  # Segundo usuario con su contraseña
+}
+
+usuario = simpledialog.askstring("Usuario", "Ingrese su nombre de usuario:")
+password = simpledialog.askstring("Contraseña", "Ingrese su contraseña:", show='*')
+
+# Verifica si el usuario y la contraseña son válidos
+if usuario not in usuarios_validos or usuarios_validos[usuario] != password:
+    messagebox.showerror("Error de autenticación", "Usuario o contraseña incorrectos.")
+    login_window.destroy()
+    exit()
+
+login_window.destroy()
