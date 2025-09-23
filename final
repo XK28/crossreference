@@ -1,0 +1,252 @@
+import os
+import re
+import io
+import pandas as pd
+import msoffcrypto
+import tkinter as tk
+from tkinter import simpledialog
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import (
+    SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+)
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import inch
+
+# -----------------------
+# Interfaz gráfica para selección de tipo de validación
+# -----------------------
+tipo_validacion = None
+
+def seleccionar_tipo(tipo):
+    global tipo_validacion
+    tipo_validacion = tipo
+    ventana.destroy()
+
+ventana = tk.Tk()
+ventana.title("Seleccionar tipo de validación")
+ventana.geometry("300x120")
+tk.Label(ventana, text="Seleccione el tipo de validación:").pack(pady=10)
+tk.Button(ventana, text="ACH XPRESS", width=20, command=lambda: seleccionar_tipo("ach")).pack(pady=5)
+tk.Button(ventana, text="Cuenta Puente", width=20, command=lambda: seleccionar_tipo("puente")).pack(pady=5)
+ventana.mainloop()
+
+# -----------------------
+# Contraseña
+# -----------------------
+password = simpledialog.askstring("Contraseña", "Ingrese la contraseña del archivo Excel (dejar vacío si no tiene):")
+
+# -----------------------
+# Funciones auxiliares
+# -----------------------
+def extraer_id_7_inicio_exacto(s):
+    if s is None:
+        return None
+    s = str(s).strip()
+    if not s:
+        return None
+    m = re.match(r'^(\d+)', s)
+    if not m:
+        return None
+    digits = m.group(1)
+    if len(digits) == 7:
+        return digits
+    return None
+
+def parse_amount_safe(x):
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return None
+    s = str(x).strip()
+    if s == "":
+        return None
+    s = s.replace(",", "")
+    s = re.sub(r'[^\d.\-]', '', s)
+    if s in ("", ".", "-", "-.", ".-"):
+        return None
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+# -----------------------
+# Lectura validación
+# -----------------------
+validacion_dir = r"C:\\Users\\katejada\\Desktop\\Codigos y .Exe\\ACH\\validacion"
+archivos_validacion = [f for f in os.listdir(validacion_dir) if f.lower().endswith(('.xlsx', '.xlsm', '.csv'))]
+if not archivos_validacion:
+    raise FileNotFoundError("No se encontró archivo de validación en la carpeta ./validacion")
+ruta_validacion = os.path.join(validacion_dir, archivos_validacion[0])
+
+if ruta_validacion.lower().endswith('.csv'):
+    df_validar = pd.read_csv(
+        ruta_validacion,
+        header=None,
+        dtype=str,
+        sep='|',
+        engine='python',
+        on_bad_lines='skip'
+    )
+else:
+    with open(ruta_validacion, "rb") as f:
+        office_file = msoffcrypto.OfficeFile(f)
+        try:
+            enc = office_file.is_encrypted()
+        except Exception:
+            enc = bool(password)
+        if enc:
+            try:
+                if password:
+                    office_file.load_key(password=password)
+                decrypted = io.BytesIO()
+                office_file.decrypt(decrypted)
+                decrypted.seek(0)
+                df_validar = pd.read_excel(decrypted, engine="openpyxl", header=None)
+            except Exception:
+                df_validar = pd.read_excel(ruta_validacion, engine="openpyxl", header=None)
+        else:
+            df_validar = pd.read_excel(ruta_validacion, engine="openpyxl", header=None)
+
+# -----------------------
+# Procesar validación: generar llaves, distinguir BC vs BD
+# -----------------------
+if len(df_validar) > 1:
+    df_valid = df_validar.iloc[1:].reset_index(drop=True)
+else:
+    df_valid = df_validar.copy()
+
+# preparar columnas
+colB = df_valid[1].astype(str) if df_valid.shape[1] > 1 else pd.Series([None]*len(df_valid))
+colC = df_valid[2] if df_valid.shape[1] > 2 else pd.Series([None]*len(df_valid))
+colD = df_valid[3] if df_valid.shape[1] > 3 else pd.Series([None]*len(df_valid))
+
+valid_llaves_bc = []  # (llave, monto)
+valid_llaves_bd = []
+
+if tipo_validacion == "puente":
+    # solo BD: usar B|D
+    for b, d in zip(colB, colD):
+        idv = extraer_id_7_inicio_exacto(b)
+        if idv is None:
+            continue
+        amt = parse_amount_safe(d)
+        if amt is None:
+            continue
+        llave = f"{idv} | {amt:.2f}"
+        valid_llaves_bd.append((llave, amt))
+else:
+    # ACH: prefer BC, si C nulo usar BD
+    for b, c, d in zip(colB, colC, colD):
+        idv = extraer_id_7_inicio_exacto(b)
+        if idv is None:
+            continue
+        amt_c = parse_amount_safe(c)
+        if amt_c is not None:
+            llave = f"{idv} | {amt_c:.2f}"
+            valid_llaves_bc.append((llave, amt_c))
+        else:
+            amt_d = parse_amount_safe(d)
+            if amt_d is not None:
+                llave = f"{idv} | {amt_d:.2f}"
+                valid_llaves_bd.append((llave, amt_d))
+            else:
+                continue
+
+# construir DataFrame de llaves de validación
+llaves_validas = set([lk for (lk, m) in valid_llaves_bc + valid_llaves_bd])
+
+# -----------------------
+# Leer referencias y generar llaves de referencia (como ya lo haces)
+# -----------------------
+# (mantener la lógica que ya tienes para referencias)
+# ...
+# Aquí asumimos al final que tienes llaves_referencia = set(...) 
+
+# -----------------------
+# Comparación
+# -----------------------
+llaves_encontradas = sorted(list(llaves_validas & llaves_referencia))
+llaves_no_encontradas = sorted(list(llaves_validas - llaves_referencia))
+
+# -----------------------
+# Calcular los resúmenes solicitados
+# -----------------------
+
+# BC encontradas
+found_bc = [m for (lk, m) in valid_llaves_bc if lk in llaves_referencia]
+sum_found_bc = sum(found_bc)
+cnt_found_bc = len(found_bc)
+
+# BC no encontradas
+no_found_bc = [m for (lk, m) in valid_llaves_bc if lk not in llaves_referencia]
+sum_no_found_bc = sum(no_found_bc)
+cnt_no_found_bc = len(no_found_bc)
+
+# BD encontradas
+found_bd = [m for (lk, m) in valid_llaves_bd if lk in llaves_referencia]
+sum_found_bd = sum(found_bd)
+cnt_found_bd = len(found_bd)
+
+# BD no encontradas
+no_found_bd = [m for (lk, m) in valid_llaves_bd if lk not in llaves_referencia]
+sum_no_found_bd = sum(no_found_bd)
+cnt_no_found_bd = len(no_found_bd)
+
+# -----------------------
+# Generar PDF con resumen + tablas
+# -----------------------
+pdf_name = simpledialog.askstring("Nombre del PDF", "Ingrese el nombre para el archivo PDF de salida (sin extensión):")
+if not pdf_name:
+    raise ValueError("Debe ingresar un nombre para el archivo PDF de salida.")
+
+ruta_pdf = f"{pdf_name}.pdf"  # aquí puedes aplicar la ruta de red si ya lo tienes configurado
+
+doc = SimpleDocTemplate(ruta_pdf, pagesize=letter)
+elements = []
+styles = getSampleStyleSheet()
+
+# Resumen como párrafo
+texto_resumen = (
+    f"ACH Validadas:\n"
+    f"  Llaves encontradas con columnas B|C: {cnt_found_bc}, monto total de C: {sum_found_bc:.2f}\n"
+    f"  Llaves no encontradas con columnas B|C: {cnt_no_found_bc}, monto total de C: {sum_no_found_bc:.2f}\n"
+    f"  Llaves encontradas con columnas B|D: {cnt_found_bd}, monto total de D: {sum_found_bd:.2f}\n"
+    f"  Llaves no encontradas con columnas B|D: {cnt_no_found_bd}, monto total de D: {sum_no_found_bd:.2f}"
+)
+elements.append(Paragraph(texto_resumen, styles['Normal']))
+elements.append(Spacer(1, 0.2 * inch))
+
+# Luego las tablas NO ENCONTRADAS y ENCONTRADAS como antes
+# Tabla NO ENCONTRADAS
+data_no = [[Paragraph("LLAVES NO ENCONTRADAS", styles['Heading4'])]]
+for lk in llaves_no_encontradas:
+    data_no.append([Paragraph(str(lk), styles['Normal'])])
+tabla_no = Table(data_no, colWidths=[6.5 * inch])
+tabla_no.setStyle(TableStyle([
+    ('BACKGROUND', (0, 0), (-1, 0), colors.red),
+    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+    ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+    ('VALIGN', (0, 0), (-1, -1), 'TOP')
+]))
+elements.append(tabla_no)
+elements.append(Spacer(1, 0.3 * inch))
+
+# Tabla ENCONTRADAS
+data_si = [[Paragraph("LLAVES ENCONTRADAS", styles['Heading4'])]]
+for lk in llaves_encontradas:
+    data_si.append([Paragraph(str(lk), styles['Normal'])])
+tabla_si = Table(data_si, colWidths=[6.5 * inch])
+tabla_si.setStyle(TableStyle([
+    ('BACKGROUND', (0, 0), (-1, 0), colors.green),
+    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+    ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+    ('VALIGN', (0, 0), (-1, -1), 'TOP')
+]))
+elements.append(tabla_si)
+
+doc.build(elements)
+
+print("PDF generado:", ruta_pdf)
