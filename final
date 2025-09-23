@@ -45,7 +45,6 @@ def extraer_id_7_inicio_exacto(s):
     s = str(s).strip()
     if len(s) < 7:
         return None
-    # Verificar que los primeros 7 caracteres sean dígitos
     primeros7 = s[:7]
     if primeros7.isdigit():
         return primeros7
@@ -79,7 +78,6 @@ if not archivos_validacion:
     raise FileNotFoundError("No se encontró archivo de validación en la carpeta ./validacion")
 ruta_validacion = os.path.join(validacion_dir, archivos_validacion[0])
 
-# Cargar validación
 if ruta_validacion.lower().endswith('.csv'):
     df_validar = pd.read_csv(
         ruta_validacion,
@@ -110,23 +108,22 @@ else:
             df_validar = pd.read_excel(ruta_validacion, engine="openpyxl", header=None)
 
 # -----------------------
-# Procesar validación: generar llaves BC o BD según opción
+# Generar llaves desde validación, distinguir BC vs BD
 # -----------------------
 if len(df_validar) > 1:
     df_valid = df_validar.iloc[1:].reset_index(drop=True)
 else:
     df_valid = df_validar.copy()
 
-# Columnas B, C, D
 colB = df_valid[1].astype(str) if df_valid.shape[1] > 1 else pd.Series([None]*len(df_valid))
 colC = df_valid[2] if df_valid.shape[1] > 2 else pd.Series([None]*len(df_valid))
 colD = df_valid[3] if df_valid.shape[1] > 3 else pd.Series([None]*len(df_valid))
 
-valid_llaves_bc = []  # lista de tuplas (llave, monto) de B|C
-valid_llaves_bd = []  # lista de tuplas (llave, monto) de B|D
+valid_llaves_bc = []  # lista de (llave, monto C)
+valid_llaves_bd = []  # lista de (llave, monto D ó monto fallback)
 
 if tipo_validacion == "puente":
-    # Cuenta Puente: usar columnas B|D
+    # sólo BD
     for b, d in zip(colB, colD):
         idv = extraer_id_7_inicio_exacto(b)
         if idv is None:
@@ -137,7 +134,7 @@ if tipo_validacion == "puente":
         llave = f"{idv} | {amt:.2f}"
         valid_llaves_bd.append((llave, amt))
 else:
-    # ACH XPRESS: usar B|C si C tiene valor; si C null, usar B|D
+    # ACH Xpress
     for b, c, d in zip(colB, colC, colD):
         idv = extraer_id_7_inicio_exacto(b)
         if idv is None:
@@ -154,11 +151,10 @@ else:
             else:
                 continue
 
-# Crear conjunto de llaves válidas
 llaves_validas = set([lk for (lk, m) in valid_llaves_bc + valid_llaves_bd])
 
 # -----------------------
-# Leer archivos de referencia y generar llaves_referencia
+# Leer referencias y obtener llaves_referencia
 # -----------------------
 referencia_dir = r"C:\\Users\\katejada\\Desktop\\Codigos y .Exe\\ACH\\referencia"
 archivos_referencia = [
@@ -201,7 +197,6 @@ for archivo in archivos_referencia:
             else:
                 df_ref = df_ref_original
 
-        # Detectar mejor columna de IDs
         best_col = None
         best_count = 0
         max_check_col = min(4, df_ref.shape[1] - 1)
@@ -217,7 +212,6 @@ for archivo in archivos_referencia:
         if best_col is None or best_count == 0:
             continue
 
-        # Columna monto preferente
         if 4 in df_ref.columns:
             col_amount = df_ref[4]
             if col_amount.apply(parse_amount_safe).notna().any():
@@ -228,7 +222,6 @@ for archivo in archivos_referencia:
             amount_col_idx = None
 
         if amount_col_idx is None:
-            # fallback: búsqueda
             amount_col_idx = None
             for j in range(1, min(7, df_ref.shape[1])):
                 serie = df_ref[j].apply(parse_amount_safe)
@@ -261,7 +254,7 @@ if not df_refs_list:
 
 df_refs_concat = pd.concat(df_refs_list, ignore_index=True)
 
-# DEFINIR llaves_referencia AQUÍ
+# Definición correcta de llaves_referencia
 llaves_referencia = set(df_refs_concat['LLAVE'])
 
 # -----------------------
@@ -271,7 +264,31 @@ llaves_encontradas = sorted(list(llaves_validas & llaves_referencia))
 llaves_no_encontradas = sorted(list(llaves_validas - llaves_referencia))
 
 # -----------------------
-# Generar PDF (puedes incluir el resumen y tablas como lo hayas configurado)
+# Resúmenes para B|C y B|D
+# -----------------------
+
+# B|C encontradas
+found_bc = [m for (lk, m) in valid_llaves_bc if lk in llaves_referencia]
+sum_found_bc = sum(found_bc)
+cnt_found_bc = len(found_bc)
+
+# B|C no encontradas
+no_found_bc = [m for (lk, m) in valid_llaves_bc if lk not in llaves_referencia]
+sum_no_found_bc = sum(no_found_bc)
+cnt_no_found_bc = len(no_found_bc)
+
+# B|D encontradas
+found_bd = [m for (lk, m) in valid_llaves_bd if lk in llaves_referencia]
+sum_found_bd = sum(found_bd)
+cnt_found_bd = len(found_bd)
+
+# B|D no encontradas
+no_found_bd = [m for (lk, m) in valid_llaves_bd if lk not in llaves_referencia]
+sum_no_found_bd = sum(no_found_bd)
+cnt_no_found_bd = len(no_found_bd)
+
+# -----------------------
+# Generar PDF con resumen y tablas
 # -----------------------
 pdf_name = simpledialog.askstring("Nombre del PDF", "Ingrese el nombre para el archivo PDF de salida (sin extensión):")
 if not pdf_name:
@@ -283,7 +300,19 @@ doc = SimpleDocTemplate(ruta_pdf, pagesize=letter)
 elements = []
 styles = getSampleStyleSheet()
 
-# Ejemplo tabla NO ENCONTRADAS
+# Párrafo resumen
+texto_resumen = (
+    f"Resumen de llaves usando columnas B|C:\n"
+    f"  Encontradas: {cnt_found_bc} llaves, monto total C: {sum_found_bc:.2f}\n"
+    f"  No encontradas: {cnt_no_found_bc} llaves, monto total C: {sum_no_found_bc:.2f}\n"
+    f"Resumen de llaves usando columnas B|D:\n"
+    f"  Encontradas: {cnt_found_bd} llaves, monto total D: {sum_found_bd:.2f}\n"
+    f"  No encontradas: {cnt_no_found_bd} llaves, monto total D: {sum_no_found_bd:.2f}"
+)
+elements.append(Paragraph(texto_resumen, styles['Normal']))
+elements.append(Spacer(1, 0.3 * inch))
+
+# Tabla llaves NO encontradas
 data_no = [[Paragraph("LLAVES NO ENCONTRADAS", styles['Heading4'])]]
 for lk in llaves_no_encontradas:
     data_no.append([Paragraph(str(lk), styles['Normal'])])
@@ -299,7 +328,7 @@ tabla_no.setStyle(TableStyle([
 elements.append(tabla_no)
 elements.append(Spacer(1, 0.3 * inch))
 
-# Ejemplo tabla ENCONTRADAS
+# Tabla llaves ENCONTRADAS
 data_si = [[Paragraph("LLAVES ENCONTRADAS", styles['Heading4'])]]
 for lk in llaves_encontradas:
     data_si.append([Paragraph(str(lk), styles['Normal'])])
