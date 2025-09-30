@@ -1,0 +1,57 @@
+import os
+import re
+import io
+import subprocess
+import pandas as pd
+import msoffcrypto
+import tkinter as tk
+from tkinter import simpledialog
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import (
+    SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+)
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+
+# -----------------------
+# Función para calcular SHA256 con certutil
+# -----------------------
+def calcular_sha256_con_certutil(ruta_archivo):
+    try:
+        cmd = ["certutil", "-hashfile", ruta_archivo, "SHA256"]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        salida = result.stdout.strip()
+        return salida
+    except subprocess.CalledProcessError as e:
+        print("Error al calcular hash con certutil:", e)
+        return None
+    except FileNotFoundError as e:
+        print("certutil no encontrado:", e)
+        return None
+
+# -----------------------
+# (Aquí va toda la lógica que ya tienes para interfaz, lectura de validación/referencia, excepciones, etc.)
+# -----------------------
+
+# Suponiendo que ya determinaste ruta_validacion más arriba…
+
+# Calcular hash del archivo de validación
+hash_validacion = calcular_sha256_con_certutil(ruta_validacion)
+if hash_validacion is None:
+    hash_validacion = "No disponible"
+
+# -----------------------
+# Al generar el PDF, insertar párrafo con el hash
+# -----------------------
+# (Dentro de tu sección donde comienzas a armar `elements = []`)
+styles = getSampleStyleSheet()
+style_normal = styles['Normal']
+
+# Antes del resumen o donde quieras mostrarlo:
+elements.append(Paragraph(f"Hash SHA256 del archivo de validación:<br/>{hash_validacion}", style_normal))
+elements.append(Spacer(1, 0.2 * inch))
+
+# Después sigue tu resumen, tablas, excepciones, etc.
+# ...
+# doc.build(elements)
