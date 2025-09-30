@@ -15,7 +15,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 
 # -----------------------
-# Función para calcular SHA256 con certutil
+# Función para calcular SHA256 usando certutil (Windows)
 # -----------------------
 def calcular_sha256_con_certutil(ruta_archivo):
     try:
@@ -27,31 +27,383 @@ def calcular_sha256_con_certutil(ruta_archivo):
         print("Error al calcular hash con certutil:", e)
         return None
     except FileNotFoundError as e:
-        print("certutil no encontrado:", e)
+        print("certutil no encontrado en el sistema:", e)
         return None
 
 # -----------------------
-# (Aquí va toda la lógica que ya tienes para interfaz, lectura de validación/referencia, excepciones, etc.)
+# Funciones auxiliares para extracción de ID y parseo de montos
 # -----------------------
+def extraer_id_7_inicio_exacto(s):
+    """Si los primeros 7 caracteres de la cadena s son dígitos, los devuelve; si no, retorna None."""
+    if s is None:
+        return None
+    s = str(s).strip()
+    if len(s) < 7:
+        return None
+    primeros7 = s[:7]
+    if primeros7.isdigit():
+        return primeros7
+    else:
+        return None
 
-# Suponiendo que ya determinaste ruta_validacion más arriba…
+def parse_amount_safe(x):
+    """Intenta convertir x a float de forma tolerante."""
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return None
+    s = str(x).strip()
+    if s == "":
+        return None
+    s = s.replace(",", "")
+    s = re.sub(r'[^\d.\-]', '', s)
+    if s in ("", ".", "-", "-.", ".-"):
+        return None
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+# -----------------------
+# Interfaz gráfica: elegir tipo de validación
+# -----------------------
+tipo_validacion = None
+
+def seleccionar_tipo(tipo):
+    global tipo_validacion
+    tipo_validacion = tipo
+    ventana.destroy()
+
+ventana = tk.Tk()
+ventana.title("Seleccionar tipo de validación")
+ventana.geometry("300x120")
+tk.Label(ventana, text="Seleccione el tipo de validación:").pack(pady=10)
+tk.Button(ventana, text="ACH XPRESS", width=20, command=lambda: seleccionar_tipo("ach")).pack(pady=5)
+tk.Button(ventana, text="Cuenta Puente", width=20, command=lambda: seleccionar_tipo("puente")).pack(pady=5)
+ventana.mainloop()
+
+# -----------------------
+# Pedir contraseña para Excel (si aplica)
+# -----------------------
+password = simpledialog.askstring("Contraseña", "Ingrese la contraseña del archivo Excel (dejar vacío si no tiene):")
+
+# -----------------------
+# Leer archivo de validación
+# -----------------------
+validacion_dir = r"C:\\Users\\katejada\\Desktop\\Codigos y .Exe\\ACH\\validacion"
+archivos_validacion = [
+    f for f in os.listdir(validacion_dir)
+    if f.lower().endswith(('.xlsx', '.xlsm', '.csv'))
+]
+if not archivos_validacion:
+    raise FileNotFoundError("No se encontró archivo de validación en la carpeta ./validacion")
+
+ruta_validacion = os.path.join(validacion_dir, archivos_validacion[0])
 
 # Calcular hash del archivo de validación
 hash_validacion = calcular_sha256_con_certutil(ruta_validacion)
 if hash_validacion is None:
     hash_validacion = "No disponible"
 
-# -----------------------
-# Al generar el PDF, insertar párrafo con el hash
-# -----------------------
-# (Dentro de tu sección donde comienzas a armar `elements = []`)
-styles = getSampleStyleSheet()
-style_normal = styles['Normal']
+# Cargar validación (CSV o Excel con posible encriptado)
+if ruta_validacion.lower().endswith('.csv'):
+    df_validar = pd.read_csv(
+        ruta_validacion,
+        header=None,
+        dtype=str,
+        sep='|',
+        engine='python',
+        on_bad_lines='skip'
+    )
+else:
+    with open(ruta_validacion, "rb") as f:
+        office_file = msoffcrypto.OfficeFile(f)
+        try:
+            enc = office_file.is_encrypted()
+        except Exception:
+            enc = bool(password)
+        if enc:
+            try:
+                if password:
+                    office_file.load_key(password=password)
+                decrypted = io.BytesIO()
+                office_file.decrypt(decrypted)
+                decrypted.seek(0)
+                df_validar = pd.read_excel(decrypted, engine="openpyxl", header=None)
+            except Exception:
+                df_validar = pd.read_excel(ruta_validacion, engine="openpyxl", header=None)
+        else:
+            df_validar = pd.read_excel(ruta_validacion, engine="openpyxl", header=None)
 
-# Antes del resumen o donde quieras mostrarlo:
+# -----------------------
+# Procesar filas de validación, filtrar y generar llaves / excepciones
+# -----------------------
+# Tomar desde fila 1 en adelante
+if len(df_validar) > 1:
+    df_valid = df_validar.iloc[1:].reset_index(drop=True)
+else:
+    df_valid = df_validar.copy()
+
+# Filtrar filas donde columna B es NaN o vacía
+if 1 in df_valid.columns:
+    df_valid = df_valid[df_valid[1].notna() & (df_valid[1].astype(str).str.strip() != "")].reset_index(drop=True)
+
+colB = df_valid[1].astype(str) if df_valid.shape[1] > 1 else pd.Series([None]*len(df_valid))
+colC = df_valid[2] if df_valid.shape[1] > 2 else pd.Series([None]*len(df_valid))
+colD = df_valid[3] if df_valid.shape[1] > 3 else pd.Series([None]*len(df_valid))
+
+valid_llaves_bc = []
+valid_llaves_bd = []
+excepciones = []  # lista de tuples: (fila_indice, valor_B)
+
+for idx, (b, c, d) in enumerate(zip(colB, colC, colD), start=1):
+    b_str = str(b).strip()
+    if not b_str:
+        continue
+    # Si no inicia con dígito: ignorar la fila por completo
+    if not b_str[0].isdigit():
+        continue
+    # Si inicia con más de 7 dígitos seguidos al inicio → excepción
+    if re.match(r'^\d{8,}', b_str):
+        excepciones.append((idx, b_str))
+        continue
+    # Intentar extraer exactamente 7 dígitos iniciales
+    idv = extraer_id_7_inicio_exacto(b_str)
+    if idv is None:
+        excepciones.append((idx, b_str))
+        continue
+
+    # Según el tipo de validación, usar columna C o fallback D
+    if tipo_validacion == "puente":
+        amt = parse_amount_safe(d)
+        if amt is None:
+            excepciones.append((idx, b_str))
+            continue
+        llave = f"{idv} | {amt:.2f}"
+        valid_llaves_bd.append((llave, amt))
+    else:  # ACH
+        amt_c = parse_amount_safe(c)
+        if amt_c is not None:
+            llave = f"{idv} | {amt_c:.2f}"
+            valid_llaves_bc.append((llave, amt_c))
+        else:
+            amt_d = parse_amount_safe(d)
+            if amt_d is not None:
+                llave = f"{idv} | {amt_d:.2f}"
+                valid_llaves_bd.append((llave, amt_d))
+            else:
+                excepciones.append((idx, b_str))
+                continue
+
+llaves_validas = set([lk for (lk, m) in valid_llaves_bc + valid_llaves_bd])
+
+# -----------------------
+# Leer referencias y generar llaves de referencia
+# -----------------------
+referencia_dir = r"C:\\Users\\katejada\\Desktop\\Codigos y .Exe\\ACH\\referencia"
+archivos_referencia = [
+    f for f in os.listdir(referencia_dir)
+    if f.lower().endswith(('.xlsx', '.xlsm', '.csv'))
+]
+df_refs_list = []
+
+for archivo in archivos_referencia:
+    ruta_archivo = os.path.join(referencia_dir, archivo)
+    try:
+        if archivo.lower().endswith('.csv'):
+            df_ref = pd.read_csv(
+                ruta_archivo,
+                header=None,
+                dtype=str,
+                sep='|',
+                engine='python',
+                on_bad_lines='skip'
+            )
+        else:
+            with open(ruta_archivo, "rb") as f:
+                office_file = msoffcrypto.OfficeFile(f)
+                try:
+                    enc_ref = office_file.is_encrypted()
+                except Exception:
+                    enc_ref = bool(password)
+                if enc_ref:
+                    if password:
+                        office_file.load_key(password=password)
+                    decrypted_ref = io.BytesIO()
+                    office_file.decrypt(decrypted_ref)
+                    decrypted_ref.seek(0)
+                    df_ref_original = pd.read_excel(decrypted_ref, engine="openpyxl", header=None)
+                else:
+                    df_ref_original = pd.read_excel(ruta_archivo, engine="openpyxl", header=None)
+
+            if df_ref_original.shape[1] <= 4:
+                df_ref = df_ref_original[0].astype(str).str.split('|', expand=True)
+            else:
+                df_ref = df_ref_original
+
+        # Detectar mejor columna de IDs
+        best_col = None
+        best_count = 0
+        max_check_col = min(4, df_ref.shape[1] - 1)
+        for col_idx in range(0, max_check_col + 1):
+            try:
+                series_col = df_ref[col_idx].astype(str)
+            except Exception:
+                continue
+            valid_count = series_col.apply(extraer_id_7_inicio_exacto).notna().sum()
+            if valid_count > best_count:
+                best_count = valid_count
+                best_col = col_idx
+        if best_col is None or best_count == 0:
+            continue
+
+        # Elegir columna monto preferida
+        if 4 in df_ref.columns:
+            col_amount = df_ref[4]
+            if col_amount.apply(parse_amount_safe).notna().any():
+                amount_col_idx = 4
+            else:
+                amount_col_idx = None
+        else:
+            amount_col_idx = None
+
+        if amount_col_idx is None:
+            # fallback: buscar otra columna con valores numéricos
+            for j in range(1, min(7, df_ref.shape[1])):
+                serie = df_ref[j].apply(parse_amount_safe)
+                if serie.notna().any():
+                    amount_col_idx = j
+                    break
+
+        if amount_col_idx is None:
+            monto_series = pd.Series(['0.00'] * len(df_ref), index=df_ref.index)
+        else:
+            monto_series = df_ref[amount_col_idx].apply(parse_amount_safe).map(
+                lambda x: "{:.2f}".format(x) if x is not None else None
+            )
+
+        id_series = df_ref[best_col].astype(str).apply(extraer_id_7_inicio_exacto)
+
+        df_ref_temp = pd.DataFrame({'ID': id_series, 'MONTO': monto_series})
+        df_ref_temp = df_ref_temp[df_ref_temp['ID'].notna() & df_ref_temp['MONTO'].notna()].reset_index(drop=True)
+        if df_ref_temp.empty:
+            continue
+
+        df_ref_proc = pd.DataFrame({'LLAVE': df_ref_temp['ID'] + " | " + df_ref_temp['MONTO']})
+        df_refs_list.append(df_ref_proc)
+
+    except Exception:
+        continue
+
+if not df_refs_list:
+    raise ValueError("No se pudieron procesar archivos de referencia válidos.")
+
+df_refs_concat = pd.concat(df_refs_list, ignore_index=True)
+llaves_referencia = set(df_refs_concat['LLAVE'])
+
+llaves_encontradas = sorted(list(llaves_validas & llaves_referencia))
+llaves_no_encontradas = sorted(list(llaves_validas - llaves_referencia))
+
+# -----------------------
+# Calcular resúmenes B|C y B|D
+# -----------------------
+found_bc = [m for (lk, m) in valid_llaves_bc if lk in llaves_referencia]
+sum_found_bc = sum(found_bc)
+cnt_found_bc = len(found_bc)
+
+no_found_bc = [m for (lk, m) in valid_llaves_bc if lk not in llaves_referencia]
+sum_no_found_bc = sum(no_found_bc)
+cnt_no_found_bc = len(no_found_bc)
+
+found_bd = [m for (lk, m) in valid_llaves_bd if lk in llaves_referencia]
+sum_found_bd = sum(found_bd)
+cnt_found_bd = len(found_bd)
+
+no_found_bd = [m for (lk, m) in valid_llaves_bd if lk not in llaves_referencia]
+sum_no_found_bd = sum(no_found_bd)
+cnt_no_found_bd = len(no_found_bd)
+
+# -----------------------
+# Generar PDF con hash, resumen, excepciones y tablas
+# -----------------------
+pdf_name = simpledialog.askstring("Nombre del PDF", "Ingrese el nombre para el archivo PDF de salida (sin extensión):")
+if not pdf_name:
+    raise ValueError("Debe ingresar un nombre para el archivo PDF de salida.")
+
+carpeta_salida = r"\\ntappama01-c01\Herramienta Usuario Final en Ejecucion\REVISION XPRESS"
+if not os.path.exists(carpeta_salida):
+    os.makedirs(carpeta_salida, exist_ok=True)
+ruta_pdf = os.path.join(carpeta_salida, f"{pdf_name}.pdf")
+
+doc = SimpleDocTemplate(ruta_pdf, pagesize=letter)
+elements = []
+styles = getSampleStyleSheet()
+
+# Párrafo con hash del archivo de validación
+style_normal = styles['Normal']
 elements.append(Paragraph(f"Hash SHA256 del archivo de validación:<br/>{hash_validacion}", style_normal))
 elements.append(Spacer(1, 0.2 * inch))
 
-# Después sigue tu resumen, tablas, excepciones, etc.
-# ...
-# doc.build(elements)
+# Resumen
+style_res = ParagraphStyle('ResumenStyle', parent=styles['Normal'], leading=14, spaceAfter=12)
+texto_resumen = (
+    f"Resumen de llaves usando columnas B|C:<br/>"
+    f"Encontradas: {cnt_found_bc} llaves, monto total C: {sum_found_bc:.2f}<br/>"
+    f"No encontradas: {cnt_no_found_bc} llaves, monto total C: {sum_no_found_bc:.2f}<br/><br/>"
+    f"Resumen de llaves usando columnas B|D:<br/>"
+    f"Encontradas: {cnt_found_bd} llaves, monto total D: {sum_found_bd:.2f}<br/>"
+    f"No encontradas: {cnt_no_found_bd} llaves, monto total D: {sum_no_found_bd:.2f}"
+)
+elements.append(Paragraph(texto_resumen, style_res))
+elements.append(Spacer(1, 0.2 * inch))
+
+# Sección Excepciones
+if excepciones:
+    elements.append(Paragraph("Excepciones (filas con columna B inválida):", styles['Heading4']))
+    data_exc = [["Fila", "Valor B"]]
+    for (idx, valb) in excepciones:
+        data_exc.append([str(idx), Paragraph(str(valb), styles['Normal'])])
+    tabla_exc = Table(data_exc, colWidths=[1.5 * inch, 5.0 * inch])
+    tabla_exc.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP')
+    ]))
+    elements.append(tabla_exc)
+    elements.append(Spacer(1, 0.3 * inch))
+
+# Tabla llaves NO encontradas
+data_no = [[Paragraph("LLAVES NO ENCONTRADAS", styles['Heading4'])]]
+for lk in llaves_no_encontradas:
+    data_no.append([Paragraph(str(lk), styles['Normal'])])
+tabla_no = Table(data_no, colWidths=[6.5 * inch])
+tabla_no.setStyle(TableStyle([
+    ('BACKGROUND', (0, 0), (-1, 0), colors.red),
+    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+    ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+    ('VALIGN', (0, 0), (-1, -1), 'TOP')
+]))
+elements.append(tabla_no)
+elements.append(Spacer(1, 0.3 * inch))
+
+# Tabla llaves ENCONTRADAS
+data_si = [[Paragraph("LLAVES ENCONTRADAS", styles['Heading4'])]]
+for lk in llaves_encontradas:
+    data_si.append([Paragraph(str(lk), styles['Normal'])])
+tabla_si = Table(data_si, colWidths=[6.5 * inch])
+tabla_si.setStyle(TableStyle([
+    ('BACKGROUND', (0, 0), (-1, 0), colors.green),
+    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+    ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+    ('VALIGN', (0, 0), (-1, -1), 'TOP')
+]))
+elements.append(tabla_si)
+
+doc.build(elements)
+
+print("PDF generado en:", ruta_pdf)
