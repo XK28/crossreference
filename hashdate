@@ -12,44 +12,59 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 
-# --------------------------
-# Función para calcular SHA256 con certutil
-# --------------------------
+# ----------------------------
+# Función para calcular SHA256 usando certutil (Windows)
+# ----------------------------
 def calcular_sha256_con_certutil(ruta_archivo):
     try:
         cmd = ["certutil", "-hashfile", ruta_archivo, "SHA256"]
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        salida = result.stdout.strip()
-        return salida
+        return result.stdout.strip()
     except subprocess.CalledProcessError as e:
         print("Error al ejecutar certutil:", e)
         return None
     except FileNotFoundError:
-        print("certutil no disponible en el sistema.")
+        print("certutil no disponible en sistema.")
         return None
 
-# --------------------------
-# Funciones auxiliares
-# --------------------------
-def extraer_id_7_inicio_exacto(s):
+# ----------------------------
+# Funciones auxiliares para detectar fecha, extraer dígitos iniciales, parsear montos
+# ----------------------------
+from dateutil.parser import parse, ParserError
+
+def es_fecha(s):
     """
-    Si la cadena s comienza con exactamente 7 dígitos consecutivos, devuelve esos 7.
-    En cualquier otro caso devuelve None.
+    Retorna True si la cadena s puede interpretarse como fecha (con parseo estricto).
+    """
+    if s is None:
+        return False
+    s = str(s).strip()
+    if s == "":
+        return False
+    try:
+        _ = parse(s, fuzzy=False)
+        return True
+    except (ParserError, ValueError):
+        return False
+
+def extraer_id_inicio_numeros(s):
+    """
+    Retorna la secuencia de dígitos iniciales de la cadena s (uno o más),
+    o None si no empieza con dígito.
     """
     if s is None:
         return None
     s = str(s).strip()
-    # Revisa que los primeros caracteres sean dígitos
     m = re.match(r'^(\d+)', s)
     if not m:
         return None
-    grupo = m.group(1)
-    # Si ese grupo es exactamente 7 dígitos, lo tomamos
-    if len(grupo) == 7:
-        return grupo
-    return None
+    return m.group(1)
 
 def parse_amount_safe(x):
+    """
+    Convierte x a float si es posible, limpiando caracteres no numéricos.
+    Retorna None si no es convertible.
+    """
     if x is None or (isinstance(x, float) and pd.isna(x)):
         return None
     s = str(x).strip()
@@ -62,9 +77,9 @@ def parse_amount_safe(x):
     except:
         return None
 
-# --------------------------
-# Interfaz gráfica para elegir tipo de validación
-# --------------------------
+# ----------------------------
+# Interfaz gráfica para elegir tipo validación
+# ----------------------------
 tipo_validacion = None
 
 def seleccionar_tipo(tipo):
@@ -75,43 +90,36 @@ def seleccionar_tipo(tipo):
 ventana = tk.Tk()
 ventana.title("Seleccionar tipo de validación")
 ventana.geometry("300x120")
-tk.Label(ventana, text="Seleccione tipo de validación:").pack(pady=10)
+tk.Label(ventana, text="Seleccione el tipo de validación:").pack(pady=10)
 tk.Button(ventana, text="ACH XPRESS", width=20, command=lambda: seleccionar_tipo("ach")).pack(pady=5)
 tk.Button(ventana, text="Cuenta Puente", width=20, command=lambda: seleccionar_tipo("puente")).pack(pady=5)
 ventana.mainloop()
 
-# --------------------------
-# Pedir contraseña para Excel
-# --------------------------
+# ----------------------------
+# Pedir contraseña para Excel protegidos
+# ----------------------------
 password = simpledialog.askstring("Contraseña", "Ingrese la contraseña del archivo Excel (dejar vacío si no tiene):")
 
-# --------------------------
-# Rutas de validación / referencia
-# --------------------------
+# ----------------------------
+# Rutas fijas
+# ----------------------------
 validacion_dir = r"C:\\Users\\katejada\\Desktop\\Codigos y .Exe\\ACH\\validacion"
 referencia_dir = r"C:\\Users\\katejada\\Desktop\\Codigos y .Exe\\ACH\\referencia"
 
-# --------------------------
+# ----------------------------
 # Selección del archivo de validación
-# --------------------------
+# ----------------------------
 archivos_validacion = [
     f for f in os.listdir(validacion_dir)
     if f.lower().endswith(('.xlsx', '.xlsm', '.csv'))
 ]
 if not archivos_validacion:
-    raise FileNotFoundError("No se encontró archivo de validación en la carpeta.")
+    raise FileNotFoundError("No se encontró archivo de validación.")
 ruta_validacion = os.path.join(validacion_dir, archivos_validacion[0])
 
-# --------------------------
-# Calcular hash del archivo de validación
-# --------------------------
-hash_validacion = calcular_sha256_con_certutil(ruta_validacion)
-if hash_validacion is None:
-    hash_validacion = "Hash no disponible"
-
-# --------------------------
-# Leer validación (CSV o Excel)
-# --------------------------
+# ----------------------------
+# Leer archivo de validación
+# ----------------------------
 if ruta_validacion.lower().endswith('.csv'):
     df_validar = pd.read_csv(
         ruta_validacion,
@@ -131,23 +139,22 @@ else:
         if encrypted:
             if password:
                 office.load_key(password=password)
-            decrypted = io.BytesIO()
-            office.decrypt(decrypted)
-            decrypted.seek(0)
-            df_validar = pd.read_excel(decrypted, engine="openpyxl", header=None)
+            dec = io.BytesIO()
+            office.decrypt(dec)
+            dec.seek(0)
+            df_validar = pd.read_excel(dec, engine="openpyxl", header=None)
         else:
             df_validar = pd.read_excel(ruta_validacion, engine="openpyxl", header=None)
 
-# --------------------------
-# Procesar validación, generar llaves y excepciones
-# --------------------------
-# Saltarse la fila 0 si existe
+# ----------------------------
+# Generar llaves del archivo de validación + excepciones
+# ----------------------------
 if len(df_validar) > 1:
     df_valid = df_validar.iloc[1:].reset_index(drop=True)
 else:
     df_valid = df_validar.copy()
 
-# Filtrar filas donde columna B es NaN o vacío
+# Filtrar filas con B vacío o nulo
 if 1 in df_valid.columns:
     df_valid = df_valid[df_valid[1].notna() & (df_valid[1].astype(str).str.strip() != "")].reset_index(drop=True)
 
@@ -155,65 +162,68 @@ colB = df_valid[1].astype(str) if df_valid.shape[1] > 1 else pd.Series([None]*le
 colC = df_valid[2] if df_valid.shape[1] > 2 else pd.Series([None]*len(df_valid))
 colD = df_valid[3] if df_valid.shape[1] > 3 else pd.Series([None]*len(df_valid))
 
-valid_llaves_bc = []
-valid_llaves_bd = []
-excepciones = []  # (fila_indice, valor_B)
+valid_llaves = []   # lista de (llave, monto)
+excepciones = []    # lista de (fila_indice, valor_B, motivo)
 
+# Primero, (opcional) calcular hashes de referencia para usarse luego
+hashes_referencia = {}
+
+# Generar llaves para validación
 for idx, (b, c, d) in enumerate(zip(colB, colC, colD), start=1):
     b_str = str(b).strip()
     if b_str == "":
         continue
-    # Si no inicia con dígito, ignorar fila
-    if not b_str[0].isdigit():
-        continue
-    # Si inicia con más de 7 dígitos seguidos → excepción
-    if re.match(r'^\d{8,}', b_str):
-        excepciones.append((idx, b_str))
-        continue
-    # Intentar extraer exactamente 7 dígitos del inicio
-    idv = extraer_id_7_inicio_exacto(b_str)
-    if idv is None:
-        excepciones.append((idx, b_str))
+
+    # Si b_str es fecha, ignorar completamente
+    if es_fecha(b_str):
         continue
 
-    # Ahora crear llave según tipo
-    if tipo_validacion == "puente":
-        amt = parse_amount_safe(d)
-        if amt is None:
-            excepciones.append((idx, b_str))
-            continue
-        llave = f"{idv} | {amt:.2f}"
-        valid_llaves_bd.append((llave, amt))
-    else:  # ACH
-        amt_c = parse_amount_safe(c)
-        if amt_c is not None:
-            llave = f"{idv} | {amt_c:.2f}"
-            valid_llaves_bc.append((llave, amt_c))
+    # Intentar extraer secuencia inicial de dígitos
+    id_seq = extraer_id_inicio_numeros(b_str)
+    if id_seq is None:
+        # no empieza con dígito
+        excepciones.append((idx, b_str, "No inicia con dígito"))
+        continue
+
+    # Si la secuencia de dígitos iniciales es menor de 7 → excepción
+    if len(id_seq) < 7:
+        excepciones.append((idx, b_str, f"Secuencia dígitos iniciales '{id_seq}' con longitud <7"))
+        continue
+
+    # Si tiene ≥7 dígitos iniciales, lo aceptamos como ID
+    # Luego extraemos monto C preferido o fallback D
+    amt_c = parse_amount_safe(c)
+    if amt_c is not None:
+        llave = f"{id_seq} | {amt_c:.2f}"
+        valid_llaves.append((llave, amt_c))
+    else:
+        amt_d = parse_amount_safe(d)
+        if amt_d is not None:
+            llave = f"{id_seq} | {amt_d:.2f}"
+            valid_llaves.append((llave, amt_d))
         else:
-            amt_d = parse_amount_safe(d)
-            if amt_d is not None:
-                llave = f"{idv} | {amt_d:.2f}"
-                valid_llaves_bd.append((llave, amt_d))
-            else:
-                excepciones.append((idx, b_str))
-                continue
+            # Sin monto válido en C ni en D: no generamos llave
+            # Podrías, si lo deseas, registrar como excepción “sin monto”
+            continue
 
-llaves_validas = set([lk for (lk, m) in valid_llaves_bc + valid_llaves_bd])
+llaves_validas = set([lk for (lk, _) in valid_llaves])
 
-# --------------------------
-# Leer archivos de referencia y generar llaves de referencia
-# --------------------------
-df_refs_list = []
-archivos_referencia = [
-    f for f in os.listdir(referencia_dir)
-    if f.lower().endswith(('.xlsx', '.xlsm', '.csv'))
-]
-for archivo in archivos_referencia:
-    ruta_archivo = os.path.join(referencia_dir, archivo)
+# ----------------------------
+# Leer documentos de referencia: calcular hash + extraer llaves
+# ----------------------------
+ref_llaves = set()
+
+for ar in os.listdir(referencia_dir):
+    if not ar.lower().endswith(('.xlsx', '.xlsm', '.csv')):
+        continue
+    ruta_ar = os.path.join(referencia_dir, ar)
+    h = calcular_sha256_con_certutil(ruta_ar)
+    hashes_referencia[ar] = h
+
     try:
-        if archivo.lower().endswith('.csv'):
+        if ar.lower().endswith('.csv'):
             df_ref = pd.read_csv(
-                ruta_archivo,
+                ruta_ar,
                 header=None,
                 dtype=str,
                 sep='|',
@@ -221,7 +231,7 @@ for archivo in archivos_referencia:
                 on_bad_lines='skip'
             )
         else:
-            with open(ruta_archivo, "rb") as f:
+            with open(ruta_ar, "rb") as f:
                 office = msoffcrypto.OfficeFile(f)
                 try:
                     enc = office.is_encrypted()
@@ -230,97 +240,68 @@ for archivo in archivos_referencia:
                 if enc:
                     if password:
                         office.load_key(password=password)
-                    decrypted = io.BytesIO()
-                    office.decrypt(decrypted)
-                    decrypted.seek(0)
-                    df_ref = pd.read_excel(decrypted, engine="openpyxl", header=None)
+                    dec = io.BytesIO()
+                    office.decrypt(dec)
+                    dec.seek(0)
+                    df_ref = pd.read_excel(dec, engine="openpyxl", header=None)
                 else:
-                    df_ref = pd.read_excel(ruta_archivo, engine="openpyxl", header=None)
+                    df_ref = pd.read_excel(ruta_ar, engine="openpyxl", header=None)
 
-        if df_ref.shape[1] <= 4:
-            df_ref = df_ref[0].astype(str).str.split("|", expand=True)
-
-        # detectar columna ID
-        best_col = None
-        best_count = 0
-        max_check = min(4, df_ref.shape[1] - 1)
-        for col_idx in range(0, max_check+1):
-            try:
-                series_col = df_ref[col_idx].astype(str)
-            except:
-                continue
-            cnt = series_col.apply(extraer_id_7_inicio_exacto).notna().sum()
-            if cnt > best_count:
-                best_count = cnt
-                best_col = col_idx
-        if best_col is None or best_count == 0:
-            continue
-
-        # columna monto preferida
-        amount_col_idx = None
-        if 4 in df_ref.columns:
-            col_amt = df_ref[4]
-            if col_amt.apply(parse_amount_safe).notna().any():
-                amount_col_idx = 4
-        if amount_col_idx is None:
-            for j in range(1, min(7, df_ref.shape[1])):
-                series_amt = df_ref[j].apply(parse_amount_safe)
-                if series_amt.notna().any():
-                    amount_col_idx = j
-                    break
-
-        if amount_col_idx is None:
-            monto_series = pd.Series(["0.00"] * len(df_ref), index=df_ref.index)
+        if df_ref.shape[1] == 1:
+            df_split = df_ref[0].astype(str).str.split("|", expand=True)
         else:
-            monto_series = df_ref[amount_col_idx].apply(parse_amount_safe).map(
-                lambda x: "{:.2f}".format(x) if x is not None else None
-            )
+            df_split = df_ref
 
-        id_series = df_ref[best_col].astype(str).apply(extraer_id_7_inicio_exacto)
-        df_ref_temp = pd.DataFrame({"ID": id_series, "MONTO": monto_series})
-        df_ref_temp = df_ref_temp[df_ref_temp["ID"].notna() & df_ref_temp["MONTO"].notna()].reset_index(drop=True)
-        if df_ref_temp.empty:
-            continue
-        df_ref_proc = pd.DataFrame({"LLAVE": df_ref_temp["ID"] + " | " + df_ref_temp["MONTO"]})
-        df_refs_list.append(df_ref_proc)
-
-    except Exception:
+        # Para cada fila en referencia, extraer llave usando la misma regla
+        for i, row in df_split.iterrows():
+            val0 = str(row.iloc[0]).strip()
+            if val0 == "":
+                continue
+            if es_fecha(val0):
+                continue
+            id_seq_ref = extraer_id_inicio_numeros(val0)
+            if id_seq_ref is None:
+                continue
+            if len(id_seq_ref) < 7:
+                continue
+            # buscar monto en alguna columna
+            monto_ref = None
+            for j in range(1, min(df_split.shape[1], 7)):
+                cand = parse_amount_safe(row.iloc[j])
+                if cand is not None:
+                    monto_ref = cand
+                    break
+            if monto_ref is None:
+                continue
+            llave_ref = f"{id_seq_ref} | {monto_ref:.2f}"
+            ref_llaves.add(llave_ref)
+    except Exception as e:
+        print(f"Error procesando referencia {ar}: {e}")
         continue
 
-if not df_refs_list:
-    raise ValueError("No se procesaron referencias válidas")
-df_refs_concat = pd.concat(df_refs_list, ignore_index=True)
-llaves_referencia = set(df_refs_concat["LLAVE"])
-
-# --------------------------
+# ----------------------------
 # Comparar llaves
-# --------------------------
-llaves_encontradas = sorted(list(llaves_validas & llaves_referencia))
-llaves_no_encontradas = sorted(list(llaves_validas - llaves_referencia))
+# ----------------------------
+llaves_encontradas = sorted(lk for lk in llaves_validas if lk in ref_llaves)
+llaves_no_encontradas = sorted(lk for lk in llaves_validas if lk not in ref_llaves)
 
-# --------------------------
-# Calcular totales para llaves B|C y B|D
-# --------------------------
-found_bc = [m for (lk, m) in valid_llaves_bc if lk in llaves_referencia]
-sum_found_bc = sum(found_bc)
-cnt_found_bc = len(found_bc)
-no_found_bc = [m for (lk, m) in valid_llaves_bc if lk not in llaves_referencia]
-sum_no_found_bc = sum(no_found_bc)
-cnt_no_found_bc = len(no_found_bc)
+# ----------------------------
+# Resúmenes de montos
+# ----------------------------
+found_montos = [m for (lk, m) in valid_llaves if lk in ref_llaves]
+sum_found = sum(found_montos)
+cnt_found = len(found_montos)
 
-found_bd = [m for (lk, m) in valid_llaves_bd if lk in llaves_referencia]
-sum_found_bd = sum(found_bd)
-cnt_found_bd = len(found_bd)
-no_found_bd = [m for (lk, m) in valid_llaves_bd if lk not in llaves_referencia]
-sum_no_found_bd = sum(no_found_bd)
-cnt_no_found_bd = len(no_found_bd)
+no_found_montos = [m for (lk, m) in valid_llaves if lk not in ref_llaves]
+sum_no_found = sum(no_found_montos)
+cnt_no_found = len(no_found_montos)
 
-# --------------------------
-# Generar PDF
-# --------------------------
-pdf_name = simpledialog.askstring("Nombre del PDF", "Ingrese el nombre para el archivo PDF de salida (sin extensión):")
+# ----------------------------
+# Generar PDF con todo
+# ----------------------------
+pdf_name = simpledialog.askstring("Nombre del PDF", "Ingrese nombre del archivo PDF (sin extensión):")
 if not pdf_name:
-    raise ValueError("Debe ingresar nombre para PDF")
+    raise ValueError("Debe ingresar nombre para el PDF")
 
 carpeta_salida = r"\\ntappama01-c01\Herramienta Usuario Final en Ejecucion\REVISION XPRESS"
 if not os.path.exists(carpeta_salida):
@@ -331,71 +312,53 @@ doc = SimpleDocTemplate(ruta_pdf, pagesize=letter)
 elements = []
 styles = getSampleStyleSheet()
 
-# Párrafo con hash
-style_norm = styles["Normal"]
-elements.append(Paragraph(f"Hash SHA256 del archivo de validación:<br/>{hash_validacion}", style_norm))
+# Mostrar hashes de referencia
+elements.append(Paragraph("Hashes de archivos de referencia:", styles["Heading4"]))
+for ar, h in hashes_referencia.items():
+    elements.append(Paragraph(f"{ar}: {h}", styles["Normal"]))
 elements.append(Spacer(1, 0.2 * inch))
 
-# Resumen párrafo
-style_res = ParagraphStyle("ResumenStyle", parent=styles["Normal"], leading=14, spaceAfter=12)
-texto_resumen = (
-    f"Resumen de llaves usando columnas B|C:<br/>"
-    f"Encontradas: {cnt_found_bc} llaves, monto total C: {sum_found_bc:.2f}<br/>"
-    f"No encontradas: {cnt_no_found_bc} llaves, monto total C: {sum_no_found_bc:.2f}<br/><br/>"
-    f"Resumen de llaves usando columnas B|D:<br/>"
-    f"Encontradas: {cnt_found_bd} llaves, monto total D: {sum_found_bd:.2f}<br/>"
-    f"No encontradas: {cnt_no_found_bd} llaves, monto total D: {sum_no_found_bd:.2f}"
+# Resumen
+style_res = ParagraphStyle("Resumen", parent=styles["Normal"], leading=14)
+texto_res = (
+    f"Número llaves válidas generadas: {len(llaves_validas)}<br/>"
+    f"Encontradas: {cnt_found}, suma de montos: {sum_found:.2f}<br/>"
+    f"No encontradas: {cnt_no_found}, suma de montos: {sum_no_found:.2f}"
 )
-elements.append(Paragraph(texto_resumen, style_res))
+elements.append(Paragraph(texto_res, style_res))
 elements.append(Spacer(1, 0.2 * inch))
 
-# Sección Excepciones con fila y valor B
+# Excepciones
 if excepciones:
-    elements.append(Paragraph("Excepciones (columnas B con longitud inválida):", styles["Heading4"]))
-    data_exc = [["Fila", "Valor columna B"]]
-    for (idx, valb) in excepciones:
-        data_exc.append([str(idx), Paragraph(str(valb), styles["Normal"])])
-    tabla_exc = Table(data_exc, colWidths=[1.5*inch, 5.0*inch])
+    elements.append(Paragraph("Excepciones (columna B con valor inválido):", styles["Heading4"]))
+    data_exc = [["Fila", "Valor B", "Motivo"]]
+    for (fila, valb, mot) in excepciones:
+        data_exc.append([str(fila), Paragraph(str(valb), styles["Normal"]), Paragraph(mot, styles["Normal"])])
+    tabla_exc = Table(data_exc, colWidths=[1.0*inch, 3.5*inch, 2.0*inch])
     tabla_exc.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP')
+        ('BACKGROUND', (0,0), (-1,0), colors.grey),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+        ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('VALIGN', (0,0), (-1,-1), 'TOP')
     ]))
     elements.append(tabla_exc)
     elements.append(Spacer(1, 0.3 * inch))
 
-# Tabla NO ENCONTRADAS
-data_no = [[Paragraph("LLAVES NO ENCONTRADAS", styles["Heading4"])]]
-for lk in llaves_no_encontradas:
-    data_no.append([Paragraph(str(lk), styles["Normal"])])
-tabla_no = Table(data_no, colWidths=[6.5*inch])
-tabla_no.setStyle(TableStyle([
-    ('BACKGROUND', (0, 0), (-1, 0), colors.red),
-    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-    ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-    ('VALIGN', (0, 0), (-1, -1), 'TOP')
-]))
+# Tabla llaves NO encontradas
+elements.append(Paragraph("LLAVES NO ENCONTRADAS", styles["Heading4"]))
+data_no = [[Paragraph(lk, styles["Normal"])] for lk in llaves_no_encontradas]
+tabla_no = Table(data_no, colWidths=[6.5 * inch])
+tabla_no.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black)]))
 elements.append(tabla_no)
 elements.append(Spacer(1, 0.3 * inch))
 
-# Tabla ENCONTRADAS
-data_si = [[Paragraph("LLAVES ENCONTRADAS", styles["Heading4"])]]
-for lk in llaves_encontradas:
-    data_si.append([Paragraph(str(lk), styles["Normal"])])
-tabla_si = Table(data_si, colWidths=[6.5*inch])
-tabla_si.setStyle(TableStyle([
-    ('BACKGROUND', (0, 0), (-1, 0), colors.green),
-    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-    ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-    ('VALIGN', (0, 0), (-1, -1), 'TOP')
-]))
+# Tabla llaves ENCONTRADAS
+elements.append(Paragraph("LLAVES ENCONTRADAS", styles["Heading4"]))
+data_si = [[Paragraph(lk, styles["Normal"])] for lk in llaves_encontradas]
+tabla_si = Table(data_si, colWidths=[6.5 * inch])
+tabla_si.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black)]))
 elements.append(tabla_si)
 
 doc.build(elements)
