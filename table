@@ -1,0 +1,12 @@
+data_no = [[Paragraph("LLAVES NO ENCONTRADAS", styles["Heading4"])]]
+for lk in llaves_no_encontradas:
+    data_no.append([Paragraph(str(lk), styles["Normal"])])
+tabla_no = Table(data_no, colWidths=[6.5 * inch])
+tabla_no.setStyle(TableStyle([
+    ('BACKGROUND', (0, 0), (-1, 0), colors.red),
+    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+    ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+    ('VALIGN', (0, 0), (-1, -1), 'TOP')
+]))
