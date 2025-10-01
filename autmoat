@@ -4,12 +4,12 @@ from tkinter import simpledialog
 from playwright.async_api import async_playwright
 import re
 
+# Ventana emergente para ingresar credenciales
 def solicitar_credenciales():
     root = tk.Tk()
     root.withdraw()
     usuario = simpledialog.askstring("Login", "Ingrese su usuario corporativo:")
     contraseña = simpledialog.askstring("Login", "Ingrese su contraseña:", show='*')
-    root.destroy()
     return usuario, contraseña
 
 async def main():
@@ -17,46 +17,128 @@ async def main():
         browser = await p.chromium.launch(headless=False)
         context = await browser.new_context()
         page = await context.new_page()
+
+        # Ir a la página de login
         await page.goto("https://web-prod.core.appst.bancolombia.corp/CWC/services/cobis/web/bank/views/commons/login.html")
         await page.wait_for_load_state('domcontentloaded')
 
-        # Suponemos parte de login Microsoft u otro flujo
-        # [...]
-        # después de autenticarse, llegarás al formulario con los dropdowns Filial / Oficina / Rol
+        # Detectar si ya estás autenticado
+        try:
+            await page.wait_for_selector('#filialCombobox', timeout=5000)
+            print("Ya estás autenticado. Saltando al paso de selección.")
+        except:
+            print("No estás autenticado. Iniciando login con Microsoft.")
 
-        # Esperar que los dropdowns “combobox” estén presentes
-        # Por ejemplo, esperar que el componente que contiene la lista (antes de desplegar) esté presente
-        await page.wait_for_selector("[aria-haspopup='listbox']", timeout=30000)
+            await page.wait_for_selector('text=Microsoft')
+            await page.click('text=Microsoft')
 
-        # Para cada dropdown (Filial, Oficina, Rol), suponiendo que hay botones que despliegan la lista
-        # Debes identificar el “activador” (el div o elemento que haces clic para desplegar)
-        # Por ejemplo:
-        #   <span class="k-dropdown-wrap k-state-default">…</span> o similar
-        # Aquí supongamos que el activador tiene clase `.k-dropdown-wrap`; 
-        activadores = page.locator(".k-dropdown-wrap")  
-        ct = await activadores.count()
-        for i in range(ct):
-            act = activadores.nth(i)
-            await act.wait_for(timeout=10000)
-            await act.scroll_into_view_if_needed()
-            await act.click()  # despliega la lista
+            await page.wait_for_url(re.compile(r".*login\.microsoftonline\.com.*"), timeout=60000)
 
-            # Ahora buscar la lista desplegada asociada (ul / li)
-            # Puedes usar el id del listbox que viste: `filialCombobox_listbox`
-            # O usar un selector genérico: ul.k-list > li
-            lista_items = page.locator("ul.k-list li.k-item")
-            await lista_items.wait_for(timeout=10000)
-            nitems = await lista_items.count()
-            print("Items del dropdown desplegado:", nitems)
-            if nitems > 0:
-                # seleccionar el primero (o el único)
-                await lista_items.nth(0).click()
-            else:
-                print("No se encontraron items")
+            usuario, contraseña = solicitar_credenciales()
 
-        # Luego clic en botón Ingresar
-        await page.wait_for_selector('button:has-text("Ingresar"), input[value="Ingresar"]', timeout=15000)
-        await page.click('button:has-text("Ingresar"), input[value="Ingresar"]')
+            await page.wait_for_selector('input[type="email"]', timeout=60000)
+            await page.fill('input[type="email"]', usuario)
+            await page.press('input[type="email"]', 'Enter')
+
+            await page.wait_for_selector('input[type="password"]', timeout=60000)
+            await page.fill('input[type="password"]', contraseña)
+            await page.press('input[type="password"]', 'Enter')
+
+            # Esperar interacción del usuario para MFA
+            print("Esperando que el usuario complete MFA (20 segundos)...")
+            await page.wait_for_timeout(20000)
+
+            # Esperar redirección de vuelta a CoreB
+            try:
+                await page.wait_for_function("!window.location.href.includes('microsoftonline.com')", timeout=60000)
+                await page.wait_for_load_state('networkidle')
+            except Exception as e:
+                print("Error esperando redirección a CoreB:", e)
+                await page.screenshot(path="error_redireccion.png")
+                await browser.close()
+                return
+
+        print("URL actual después del login:", page.url)
+
+        
+import asyncio
+import tkinter as tk
+from tkinter import simpledialog
+from playwright.async_api import async_playwright, TimeoutError
+import re
+
+def solicitar_credenciales():
+    root = tk.Tk()
+    root.withdraw()
+    usuario = simpledialog.askstring("Login", "Ingrese su usuario corporativo:")
+    contraseña = simpledialog.askstring("Login", "Ingrese su contraseña:", show='*')
+    return usuario, contraseña
+
+async def main():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=False)
+        context = await browser.new_context()
+        page = await context.new_page()
+
+        await page.goto("https://web-prod.core.appst.bancolombia.corp/CWC/services/cobis/web/bank/views/commons/login.html")
+        await page.wait_for_load_state('domcontentloaded')
+
+        try:
+            await page.wait_for_selector('select', timeout=5000)
+            print("Ya estás autenticado. Saltando al paso de selección.")
+        except TimeoutError:
+            print("No estás autenticado. Iniciando login con Microsoft.")
+            await page.wait_for_selector('text=Microsoft', state='visible', timeout=10000)
+            await page.screenshot(path="antes_click_microsoft.png")
+            await page.click('text=Microsoft')  # sin force
+            await page.screenshot(path="despues_click_microsoft.png")
+            await page.wait_for_url(re.compile(r".*login\.microsoftonline\.com.*"), timeout=60000)
+
+            usuario, contraseña = solicitar_credenciales()
+            await page.wait_for_selector('input[type="email"]', timeout=60000)
+            await page.fill('input[type="email"]', usuario)
+            await page.press('input[type="email"]', 'Enter')
+
+            await page.wait_for_selector('input[type="password"]', timeout=60000)
+            await page.fill('input[type="password"]', contraseña)
+            await page.wait_for_selector('input[type="submit"], button:has-text(\"Iniciar sesión\")', timeout=60000)
+            await page.click('input[type="submit"], button:has-text(\"Iniciar sesión\")')
+
+            await page.wait_for_url(re.compile(r".*core\.appst\.bancolombia\.corp.*"), timeout=60000)
+            await page.wait_for_load_state('networkidle')
+
+        try:
+            await page.wait_for_selector('#filialCombobox', state='visible', timeout=60000)
+            print("Dropdowns encontrados correctamente.")
+        except Exception as e:
+            print("No se encontraron los dropdowns:", e)
+            await page.screenshot(path="error_dropdowns.png")
+            await browser.close()
+            return
+
+        try:
+            print("Seleccionando Filial...")
+            await page.click('#filialCombobox')
+            await page.wait_for_selector('#filialCombobox_listbox li', timeout=10000)
+            await page.click('#filialCombobox_listbox li')
+
+            print("Seleccionando Oficina...")
+            await page.click('#oficinaCombobox')
+            await page.wait_for_selector('#oficinaCombobox_listbox li', timeout=10000)
+            await page.click('#oficinaCombobox_listbox li')
+
+            print("Seleccionando Rol...")
+            await page.click('#rolCombobox')
+            await page.wait_for_selector('#rolCombobox_listbox li', timeout=10000)
+            await page.click('#rolCombobox_listbox li')
+
+            print("Haciendo clic en 'Ingresar'...")
+            await page.wait_for_selector('text=Ingresar', timeout=10000)
+            await page.click('text=Ingresar')
+
+        except Exception as e:
+            print("Error al interactuar con los dropdowns o botón 'Ingresar':", e)
+            await page.screenshot(path="error_interaccion.png")
 
         await page.wait_for_timeout(5000)
         await browser.close()
