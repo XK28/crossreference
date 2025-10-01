@@ -1,3 +1,10 @@
+No se encontraron los dropdowns visibles: Page.wait_for_selector: Timeout 60000ms exceeded.
+Call log:
+  - waiting for locator("#filialCombobox") to be visible
+    119 × locator resolved to hidden <input required="" name="filial" kendo-combo-box="" id="filialCombobox" k-auto-bind="false" data-role="combobox" aria-disabled="false" k-clear-button="false" k-data-text-field="'value'" k-data-value-field="'code'" k-options="kOptions.filial" data-ng-model="filialIdBind" k-on-change="onChangeFilial()" k-data-source="dataSourceFilial" data-required-msg="Debe seleccionar una  filial" class="form-combobox ng-pristine ng-untouched ng-empty ng-invalid ng-invalid-required"/>
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 No se encontraron los dropdowns: Page.wait_for_selector: Timeout 60000ms exceeded.
 Call log:
   - waiting for locator("#filialCombobox") to be visible
