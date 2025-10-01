@@ -1,0 +1,52 @@
+import asyncio
+from playwright.async_api import async_playwright
+import tkinter as tk
+from tkinter import simpledialog
+
+async def main():
+    # Pedir usuario y contraseña al inicio
+    root = tk.Tk()
+    root.withdraw()
+    usuario = simpledialog.askstring("Usuario", "Ingrese su usuario:")
+    contrasena = simpledialog.askstring("Contraseña", "Ingrese su contraseña:", show='*')
+    root.destroy()
+
+    if not usuario or not contrasena:
+        print("Usuario o contraseña no proporcionados. Saliendo.")
+        return
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=False)  # puedes usar headless=True si no quieres ver la UI
+        context = await browser.new_context()
+        page = await context.new_page()
+
+        # 1. Ir a la página de login
+        await page.goto("https://web-prod.core.appst.bancolombia.corp/CWC/services/cobis/web/bank/views/commons/login.html")
+
+        # 2. Hacer clic en el botón "Microsoft"
+        await page.wait_for_selector('text=Microsoft')
+        await page.click('text=Microsoft')
+
+        # 3. Esperar campo de email
+        await page.wait_for_selector('input[type="email"]')
+
+        # 4. Ingresar usuario
+        await page.fill('input[type="email"]', usuario)
+        await page.press('input[type="email"]', 'Enter')
+
+        # 5. Esperar campo de contraseña (dependerá de cómo funcione el flujo)
+        # Cambia el selector según la página real
+        await page.wait_for_selector('input[type="password"]')
+        await page.fill('input[type="password"]', contrasena)
+        await page.press('input[type="password"]', 'Enter')
+
+        # Luego continuar con los pasos de navegación, dropdowns, etc.
+        # ...
+
+        # Esperar un poco para observar resultado
+        await page.wait_for_timeout(5000)
+
+        await browser.close()
+
+if __name__ == "__main__":
+    asyncio.run(main())
