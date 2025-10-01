@@ -1,31 +1,89 @@
 import asyncio
+import tkinter as tk
+from tkinter import simpledialog
 from playwright.async_api import async_playwright
+import re
+
+def solicitar_credenciales():
+    root = tk.Tk()
+    root.withdraw()
+    usuario = simpledialog.askstring("Login", "Ingrese su usuario corporativo:")
+    contraseña = simpledialog.askstring("Login", "Ingrese su contraseña:", show='*')
+    root.destroy()
+    return usuario, contraseña
 
 async def main():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=False)
         context = await browser.new_context()
         page = await context.new_page()
-
-        # 1. Ir a la página de login
         await page.goto("https://web-prod.core.appst.bancolombia.corp/CWC/services/cobis/web/bank/views/commons/login.html")
+        await page.wait_for_load_state('domcontentloaded')
 
-        # 2. Hacer clic en el botón "Microsoft"
-        await page.wait_for_selector('text=Microsoft')
-        await page.click('text=Microsoft')
+        # Compruebo si ya está autenticado (por ejemplo si hay dropdowns visibles en la página principal)
+        try:
+            await page.wait_for_selector('select', timeout=5000)
+            print("Ya estás autenticado — dropdown aparece directamente.")
+        except:
+            print("No autenticado, iniciar login Microsoft.")
+            # Hacer clic Microsoft
+            await page.wait_for_selector('text=Microsoft', timeout=30000)
+            await page.click('text=Microsoft')
+            # Esperar llegar al dominio de login de Microsoft
+            await page.wait_for_url(re.compile(r".*login\.microsoftonline\.com.*"), timeout=60000)
 
-        # 3. Esperar que cargue el campo de usuario
-        await page.wait_for_selector('input[type="email"]')
+            usuario, contraseña = solicitar_credenciales()
 
-        # 4. Ingresar el usuario corporativo
-        await page.fill('input[type="email"]', 'usuario_red@bancolombia.com.co')
+            # Ingresar usuario
+            await page.wait_for_selector('input[type="email"]', timeout=60000)
+            await page.fill('input[type="email"]', usuario)
+            await page.press('input[type="email"]', 'Enter')
 
-        # 5. Continuar con el login
-        await page.press('input[type="email"]', 'Enter')
+            # Ingresar contraseña
+            await page.wait_for_selector('input[type="password"]', timeout=60000)
+            await page.fill('input[type="password"]', contraseña)
+            # En algunos flujos puede que el botón sea <button> en lugar de input
+            await page.wait_for_selector('input[type="submit"], button:has-text("Iniciar sesión"), button:has-text("Ingresar")', timeout=60000)
+            await page.click('input[type="submit"], button:has-text("Iniciar sesión"), button:has-text("Ingresar")')
 
-        # Esperar unos segundos para observar el resultado
+            # Esperar volver al dominio principal
+            await page.wait_for_url(re.compile(r".*core\.appst\.bancolombia\.corp.*"), timeout=60000)
+            await page.wait_for_load_state('networkidle')
+
+        # Ahora seleccionar los dropdowns de Filial / Oficina / Rol
+        # Usamos locators y esperamos su visibilidad
+        await page.wait_for_selector('select', timeout=60000)
+
+        dropdowns = page.locator('select')
+        count = await dropdowns.count()
+        for i in range(count):
+            dr = dropdowns.nth(i)
+            # Esperar que esté habilitado y visible
+            await dr.wait_for(timeout=30000)
+            # Obtener las opciones disponibles
+            options = dr.locator('option')
+            opt_count = await options.count()
+            print(f"Dropdown #{i}, {opt_count} opciones")
+            if opt_count == 1:
+                val = await options.nth(0).get_attribute('value')
+                await dr.select_option(value=val)
+            else:
+                # si hay más opciones, escogemos la primera no vacía
+                for j in range(opt_count):
+                    opt = options.nth(j)
+                    val = await opt.get_attribute('value')
+                    text = await opt.text_content()
+                    if val and val.strip() != "":
+                        await dr.select_option(value=val)
+                        break
+
+        # Botón "Ingresar"
+        # buscar botón con texto o selector robusto
+        await page.wait_for_selector('button:has-text("Ingresar"), input[type="submit"][value="Ingresar"], button:has-text("Continuar")', timeout=30000)
+        await page.click('button:has-text("Ingresar"), input[type="submit"][value="Ingresar"], button:has-text("Continuar")')
+
         await page.wait_for_timeout(5000)
-
         await browser.close()
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
