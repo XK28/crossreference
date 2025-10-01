@@ -1,3 +1,10 @@
+No se encontraron los dropdowns: Page.wait_for_selector: Timeout 60000ms exceeded.
+Call log:
+  - waiting for locator("#filialCombobox") to be visible
+    121 × locator resolved to hidden <input required="" name="filial" kendo-combo-box="" id="filialCombobox" k-auto-bind="false" data-role="combobox" aria-disabled="false" k-clear-button="false" k-data-text-field="'value'" k-data-value-field="'code'" k-options="kOptions.filial" data-ng-model="filialIdBind" k-on-change="onChangeFilial()" k-data-source="dataSourceFilial" data-required-msg="Debe seleccionar una  filial" class="form-combobox ng-pristine ng-untouched ng-empty ng-invalid ng-invalid-required"/>
+
+
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 <div class="k-list-scroller" unselectable="on" style="height: auto;"><ul unselectable="on" class="k-list k-reset" tabindex="-1" aria-hidden="true" id="filialCombobox_listbox" aria-live="off" data-role="staticlist" role="listbox"><li tabindex="-1" role="option" unselectable="on" class="k-item ng-scope k-state-focused k-state-selected" aria-selected="true" data-offset-index="0" id="b7ceaaa6-fb09-4ff0-ab71-651fafe9171b">BANISTMO S.A.</li></ul></div>
 ????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 File "C:\Users\katejada\Desktop\Codigos y .Exe\ACH\cross3.py", line 54, in <module>
