@@ -1,0 +1,31 @@
+import asyncio
+from playwright.async_api import async_playwright
+
+async def main():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=False)
+        context = await browser.new_context()
+        page = await context.new_page()
+
+        # 1. Ir a la página de login
+        await page.goto("https://web-prod.core.appst.bancolombia.corp/CWC/services/cobis/web/bank/views/commons/login.html")
+
+        # 2. Hacer clic en el botón "Microsoft"
+        await page.wait_for_selector('text=Microsoft')
+        await page.click('text=Microsoft')
+
+        # 3. Esperar que cargue el campo de usuario
+        await page.wait_for_selector('input[type="email"]')
+
+        # 4. Ingresar el usuario corporativo
+        await page.fill('input[type="email"]', 'usuario_red@bancolombia.com.co')
+
+        # 5. Continuar con el login
+        await page.press('input[type="email"]', 'Enter')
+
+        # Esperar unos segundos para observar el resultado
+        await page.wait_for_timeout(5000)
+
+        await browser.close()
+
+asyncio.run(main())
