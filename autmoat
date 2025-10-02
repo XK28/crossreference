@@ -1,69 +1,6 @@
 import asyncio
 import tkinter as tk
 from tkinter import simpledialog
-from playwright.async_api import async_playwright
-import re
-
-# Ventana emergente para ingresar credenciales
-def solicitar_credenciales():
-    root = tk.Tk()
-    root.withdraw()
-    usuario = simpledialog.askstring("Login", "Ingrese su usuario corporativo:")
-    contraseña = simpledialog.askstring("Login", "Ingrese su contraseña:", show='*')
-    return usuario, contraseña
-
-async def main():
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)
-        context = await browser.new_context()
-        page = await context.new_page()
-
-        # Ir a la página de login
-        await page.goto("https://web-prod.core.appst.bancolombia.corp/CWC/services/cobis/web/bank/views/commons/login.html")
-        await page.wait_for_load_state('domcontentloaded')
-
-        # Detectar si ya estás autenticado
-        try:
-            await page.wait_for_selector('#filialCombobox', timeout=5000)
-            print("Ya estás autenticado. Saltando al paso de selección.")
-        except:
-            print("No estás autenticado. Iniciando login con Microsoft.")
-
-            await page.wait_for_selector('text=Microsoft')
-            await page.click('text=Microsoft')
-
-            await page.wait_for_url(re.compile(r".*login\.microsoftonline\.com.*"), timeout=60000)
-
-            usuario, contraseña = solicitar_credenciales()
-
-            await page.wait_for_selector('input[type="email"]', timeout=60000)
-            await page.fill('input[type="email"]', usuario)
-            await page.press('input[type="email"]', 'Enter')
-
-            await page.wait_for_selector('input[type="password"]', timeout=60000)
-            await page.fill('input[type="password"]', contraseña)
-            await page.press('input[type="password"]', 'Enter')
-
-            # Esperar interacción del usuario para MFA
-            print("Esperando que el usuario complete MFA (20 segundos)...")
-            await page.wait_for_timeout(20000)
-
-            # Esperar redirección de vuelta a CoreB
-            try:
-                await page.wait_for_function("!window.location.href.includes('microsoftonline.com')", timeout=60000)
-                await page.wait_for_load_state('networkidle')
-            except Exception as e:
-                print("Error esperando redirección a CoreB:", e)
-                await page.screenshot(path="error_redireccion.png")
-                await browser.close()
-                return
-
-        print("URL actual después del login:", page.url)
-
-        
-import asyncio
-import tkinter as tk
-from tkinter import simpledialog
 from playwright.async_api import async_playwright, TimeoutError
 import re
 
@@ -73,6 +10,34 @@ def solicitar_credenciales():
     usuario = simpledialog.askstring("Login", "Ingrese su usuario corporativo:")
     contraseña = simpledialog.askstring("Login", "Ingrese su contraseña:", show='*')
     return usuario, contraseña
+
+async def seleccionar_parametros_kendo(page, filial, oficina, rol):
+    try:
+        # FILIAL
+        filial_input = page.locator("input[name='filial_input']")
+        await filial_input.click()
+        await filial_input.fill(filial)
+        await page.locator(f"li:has-text('{filial}')").wait_for(state="visible", timeout=5000)
+        await page.locator(f"li:has-text('{filial}')").click()
+
+        # OFICINA
+        oficina_input = page.locator("input[name='office_input']")
+        await oficina_input.click()
+        await oficina_input.fill(oficina)
+        await page.locator(f"li:has-text('{oficina}')").wait_for(state="visible", timeout=5000)
+        await page.locator(f"li:has-text('{oficina}')").click()
+
+        # ROL
+        rol_input = page.locator("input[name='rol_input']")
+        await rol_input.click()
+        await rol_input.fill(rol)
+        await page.locator(f"li:has-text('{rol}')").wait_for(state="visible", timeout=5000)
+        await page.locator(f"li:has-text('{rol}')").click()
+
+        print("✅ Parámetros seleccionados correctamente.")
+    except Exception as e:
+        print(f"❌ Error al seleccionar parámetros: {e}")
+        
 
 async def main():
     async with async_playwright() as p:
@@ -88,10 +53,8 @@ async def main():
             print("Ya estás autenticado. Saltando al paso de selección.")
         except TimeoutError:
             print("No estás autenticado. Iniciando login con Microsoft.")
-            await page.wait_for_selector('text=Microsoft', state='visible', timeout=10000)
-            await page.screenshot(path="antes_click_microsoft.png")
-            await page.click('text=Microsoft')  # sin force
-            await page.screenshot(path="despues_click_microsoft.png")
+            await page.wait_for_selector('text=Microsoft', timeout=10000)
+            await page.click('text=Microsoft')
             await page.wait_for_url(re.compile(r".*login\.microsoftonline\.com.*"), timeout=60000)
 
             usuario, contraseña = solicitar_credenciales()
@@ -108,39 +71,34 @@ async def main():
             await page.wait_for_load_state('networkidle')
 
         try:
-            await page.wait_for_selector('#filialCombobox', state='visible', timeout=60000)
-            print("Dropdowns encontrados correctamente.")
-        except Exception as e:
-            print("No se encontraron los dropdowns:", e)
-            await page.screenshot(path="error_dropdowns.png")
-            await browser.close()
-            return
+            # Parámetros de ejemplo
+            filial = "BANISTMO S.A"
+            oficina = "SERVICIOS CALL CENTER"
+            rol = "CONSULTA SERVICIOS CALL CENTER"
 
-        try:
-            print("Seleccionando Filial...")
-            await page.click('#filialCombobox')
-            await page.wait_for_selector('#filialCombobox_listbox li', timeout=10000)
-            await page.click('#filialCombobox_listbox li')
-
-            print("Seleccionando Oficina...")
-            await page.click('#oficinaCombobox')
-            await page.wait_for_selector('#oficinaCombobox_listbox li', timeout=10000)
-            await page.click('#oficinaCombobox_listbox li')
-
-            print("Seleccionando Rol...")
-            await page.click('#rolCombobox')
-            await page.wait_for_selector('#rolCombobox_listbox li', timeout=10000)
-            await page.click('#rolCombobox_listbox li')
+            await seleccionar_parametros_kendo(page, filial, oficina, rol)
 
             print("Haciendo clic en 'Ingresar'...")
-            await page.wait_for_selector('text=Ingresar', timeout=10000)
-            await page.click('text=Ingresar')
+            ingresar_button = page.locator("button:has-text('Ingresar')")
+            await ingresar_button.wait_for(state="visible", timeout=15000)
+            await ingresar_button.click()
+            print("✅ Clic en 'Ingresar' realizado.")
+
+            # Clic en el botón de menú con título "Menú" y clase fa fa-bars
+            try:
+                menu_button = page.locator("a[title='Menú'] .fa.fa-bars")
+                await menu_button.wait_for(state="visible", timeout=10000)
+                await menu_button.click()
+                print("✅ Clic en el botón de menú realizado.")
+            except Exception as e:
+                print(f"❌ Error al hacer clic en el botón de menú: {e}")
+            
 
         except Exception as e:
-            print("Error al interactuar con los dropdowns o botón 'Ingresar':", e)
-            await page.screenshot(path="error_interaccion.png")
+            print("❌ Error al interactuar con los dropdowns o botón 'Ingresar':", e)
+            
 
-        await page.wait_for_timeout(5000)
+        await page.wait_for_timeout(15000)
         await browser.close()
 
 if __name__ == "__main__":
