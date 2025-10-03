@@ -118,45 +118,59 @@ colB = df_valid[1].astype(str) if df_valid.shape[1] > 1 else pd.Series([None]*le
 colC = df_valid[2] if df_valid.shape[1] > 2 else pd.Series([None]*len(df_valid))
 colD = df_valid[3] if df_valid.shape[1] > 3 else pd.Series([None]*len(df_valid))
 
-llaves_validas = set()
+valid_llaves_bc = []
+valid_llaves_bd = []
 excepciones = []
 
-for idx, (b, c, d) in enumerate(zip(colB, colC, colD), start=1):
+# -----------------------
+# Generar llaves
+# -----------------------
+for idx, (b, c, d) in enumerate(zip(colB, colC, colD), start=2):  # fila Excel empieza en 2
     b_str = str(b).strip()
     if b_str == "":
         continue
+
+    # ignorar si no comienza con número
+    if not b_str[0].isdigit():
+        continue
+
     m = re.match(r"^(\d+)", b_str)
     if not m:
         continue
     id_seq = m.group(1)
 
-    # Reglas de validación según tipo seleccionado
-    if tipo_validacion == "ach":  # ACH XPRESS
-        amt_c = parse_amount_safe(c)
-        if amt_c is not None:
-            llave = f"{id_seq} | {amt_c:.2f}"
-            llaves_validas.add(llave)
-        else:
-            amt_d = parse_amount_safe(d)
-            if amt_d is not None:
-                llave = f"{id_seq} | {amt_d:.2f}"
-                llaves_validas.add(llave)
+    if len(id_seq) < 7:  # excepción
+        excepciones.append((idx, b_str))
+        continue
+    if len(id_seq) > 8:  # también excepción
+        excepciones.append((idx, b_str))
+        continue
 
-    elif tipo_validacion == "puente":  # Cuentas Puente
-        amt_d = parse_amount_safe(d)
-        if amt_d is not None:
-            llave = f"{id_seq} | {amt_d:.2f}"
-            llaves_validas.add(llave)
+    amt_c = parse_amount_safe(c)
+    amt_d = parse_amount_safe(d)
+
+    if amt_c is not None:
+        llave_bc = f"{id_seq} | {amt_c:.2f}"
+        valid_llaves_bc.append((llave_bc, amt_c))
+    if amt_d is not None:
+        llave_bd = f"{id_seq} | {amt_d:.2f}"
+        valid_llaves_bd.append((llave_bd, amt_d))
 
 # -----------------------
-# Leer referencias
+# Leer referencias y calcular SHA256
 # -----------------------
 referencia_dir = r"C:\\Users\\katejada\\Desktop\\Codigos y .Exe\\ACH\\referencia"
 archivos_referencia = [f for f in os.listdir(referencia_dir) if f.lower().endswith(('.xlsx', '.xlsm', '.csv'))]
 
+hashes_referencia = {}
 df_refs_list = []
+
 for archivo in archivos_referencia:
     ruta_archivo = os.path.join(referencia_dir, archivo)
+    # hash
+    h = calcular_sha256_con_certutil(ruta_archivo)
+    hashes_referencia[archivo] = h
+
     try:
         if archivo.lower().endswith('.csv'):
             df_ref = pd.read_csv(ruta_archivo, header=None, dtype=str, sep='|', engine='python')
@@ -164,6 +178,7 @@ for archivo in archivos_referencia:
             df_ref = pd.read_excel(ruta_archivo, engine="openpyxl", header=None)
             if df_ref.shape[1] <= 4:
                 df_ref = df_ref[0].astype(str).str.split('|', expand=True)
+
         id_series = df_ref[0].astype(str).apply(extraer_id_7_8_digitos_inicio)
         monto_series = df_ref[4].apply(parse_amount_safe) if df_ref.shape[1] > 4 else pd.Series([None]*len(df_ref))
         df_ref_temp = pd.DataFrame({'ID': id_series, 'MONTO': monto_series})
@@ -179,8 +194,11 @@ llaves_referencia = set(df_refs_concat['LLAVE'])
 # -----------------------
 # Comparar llaves
 # -----------------------
-llaves_encontradas = sorted(list(llaves_validas & llaves_referencia))
-llaves_no_encontradas = sorted(list(llaves_validas - llaves_referencia))
+found_bc = [m for (lk, m) in valid_llaves_bc if lk in llaves_referencia]
+no_found_bc = [m for (lk, m) in valid_llaves_bc if lk not in llaves_referencia]
+
+found_bd = [m for (lk, m) in valid_llaves_bd if lk in llaves_referencia]
+no_found_bd = [m for (lk, m) in valid_llaves_bd if lk not in llaves_referencia]
 
 # -----------------------
 # Generar PDF
@@ -197,47 +215,47 @@ ruta_pdf = os.path.join(carpeta_salida, f"{pdf_name}.pdf")
 doc = SimpleDocTemplate(ruta_pdf, pagesize=letter)
 elements = []
 styles = getSampleStyleSheet()
-style_res = ParagraphStyle('ResumenStyle', parent=styles['Normal'], leading=14, spaceAfter=12)
 
-# Resumen dinámico según tipo_validacion
-if tipo_validacion == "ach":
-    texto_resumen = "Resumen de llaves generadas (B|C si existe, de lo contrario B|D) - Modo ACH XPRESS"
-elif tipo_validacion == "puente":
-    texto_resumen = "Resumen de llaves generadas (B|D) - Modo Cuentas Puente"
-else:
-    texto_resumen = "Resumen de llaves generadas"
-
-elements.append(Paragraph(texto_resumen, style_res))
-elements.append(Spacer(1, 0.2 * inch))
-
-# Tabla NO ENCONTRADAS
-data_no = [[Paragraph("LLAVES NO ENCONTRADAS", styles['Heading4'])]]
-for lk in llaves_no_encontradas:
-    data_no.append([Paragraph(str(lk), styles['Normal'])])
-tabla_no = Table(data_no, colWidths=[6.5 * inch])
-tabla_no.setStyle(TableStyle([
-    ('BACKGROUND', (0,0), (-1,0), colors.red),
+# 1) Hashes de referencia
+elements.append(Paragraph("Hashes SHA256 de archivos de referencia:", styles["Heading4"]))
+data_hash = [["Archivo", "SHA256"]]
+for ar, h in hashes_referencia.items():
+    data_hash.append([Paragraph(ar, styles['Normal']), Paragraph(str(h), styles['Normal'])])
+tabla_hash = Table(data_hash, colWidths=[2.5*inch, 4*inch])
+tabla_hash.setStyle(TableStyle([
+    ('BACKGROUND',(0,0),(-1,0),colors.gray),
     ('TEXTCOLOR',(0,0),(-1,0),colors.whitesmoke),
-    ('ALIGN',(0,0),(-1,-1),'LEFT'),
-    ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-    ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+    ('GRID',(0,0),(-1,-1),0.5,colors.black),
 ]))
-elements.append(tabla_no)
-elements.append(Spacer(1, 0.3 * inch))
+elements.append(tabla_hash)
+elements.append(Spacer(1,0.3*inch))
 
-# Tabla ENCONTRADAS
-data_si = [[Paragraph("LLAVES ENCONTRADAS", styles['Heading4'])]]
-for lk in llaves_encontradas:
-    data_si.append([Paragraph(str(lk), styles['Normal'])])
-tabla_si = Table(data_si, colWidths=[6.5 * inch])
-tabla_si.setStyle(TableStyle([
-    ('BACKGROUND', (0,0), (-1,0), colors.green),
-    ('TEXTCOLOR',(0,0),(-1,0),colors.whitesmoke),
-    ('ALIGN',(0,0),(-1,-1),'LEFT'),
-    ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-    ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-]))
-elements.append(tabla_si)
+# 2) Resumen
+resumen = (
+    f"Resumen de llaves usando columnas B|C:<br/>"
+    f"Encontradas: {len(found_bc)} llaves, monto total C: {sum(found_bc):.2f}<br/>"
+    f"No encontradas: {len(no_found_bc)} llaves, monto total C: {sum(no_found_bc):.2f}<br/><br/>"
+    f"Resumen de llaves usando columnas B|D:<br/>"
+    f"Encontradas: {len(found_bd)} llaves, monto total D: {sum(found_bd):.2f}<br/>"
+    f"No encontradas: {len(no_found_bd)} llaves, monto total D: {sum(no_found_bd):.2f}"
+)
+elements.append(Paragraph(resumen, styles['Normal']))
+elements.append(Spacer(1,0.3*inch))
+
+# 3) Excepciones
+if excepciones:
+    elements.append(Paragraph("Excepciones (columna B con <7 o >8 dígitos numéricos):", styles["Heading4"]))
+    data_exc = [["Fila", "Valor B"]]
+    for fila, val in excepciones:
+        data_exc.append([str(fila), Paragraph(str(val), styles['Normal'])])
+    tabla_exc = Table(data_exc, colWidths=[1.5*inch, 5*inch])
+    tabla_exc.setStyle(TableStyle([
+        ('BACKGROUND',(0,0),(-1,0),colors.grey),
+        ('TEXTCOLOR',(0,0),(-1,0),colors.whitesmoke),
+        ('GRID',(0,0),(-1,-1),0.5,colors.black),
+    ]))
+    elements.append(tabla_exc)
+    elements.append(Spacer(1,0.3*inch))
 
 doc.build(elements)
 print("PDF generado:", ruta_pdf)
