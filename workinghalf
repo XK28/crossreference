@@ -13,6 +13,7 @@ from reportlab.platypus import (
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
+from dateutil.parser import parse, ParserError
 
 # ----------------------------
 # Función para calcular SHA256 usando certutil (Windows)
@@ -58,6 +59,13 @@ password = simpledialog.askstring(
 # -----------------------
 # Funciones auxiliares
 # -----------------------
+def es_fecha(s):
+    try:
+        parse(str(s).strip(), fuzzy=False)
+        return True
+    except (ParserError, ValueError, TypeError):
+        return False
+
 def extraer_id_7_8_digitos_inicio(s):
     if s is None:
         return None
@@ -127,10 +135,9 @@ excepciones = []
 # -----------------------
 for idx, (b, c, d) in enumerate(zip(colB, colC, colD), start=2):  # fila Excel empieza en 2
     b_str = str(b).strip()
-    if b_str == "":
+    if b_str == "" or es_fecha(b_str):
         continue
 
-    # ignorar si no comienza con número
     if not b_str[0].isdigit():
         continue
 
@@ -139,10 +146,7 @@ for idx, (b, c, d) in enumerate(zip(colB, colC, colD), start=2):  # fila Excel e
         continue
     id_seq = m.group(1)
 
-    if len(id_seq) < 7:  # excepción
-        excepciones.append((idx, b_str))
-        continue
-    if len(id_seq) > 8:  # también excepción
+    if len(id_seq) < 7 or len(id_seq) > 8:
         excepciones.append((idx, b_str))
         continue
 
@@ -167,7 +171,6 @@ df_refs_list = []
 
 for archivo in archivos_referencia:
     ruta_archivo = os.path.join(referencia_dir, archivo)
-    # hash
     h = calcular_sha256_con_certutil(ruta_archivo)
     hashes_referencia[archivo] = h
 
@@ -195,10 +198,10 @@ llaves_referencia = set(df_refs_concat['LLAVE'])
 # Comparar llaves
 # -----------------------
 found_bc = [m for (lk, m) in valid_llaves_bc if lk in llaves_referencia]
-no_found_bc = [m for (lk, m) in valid_llaves_bc if lk not in llaves_referencia]
+no_found_bc = [lk for (lk, m) in valid_llaves_bc if lk not in llaves_referencia]
 
 found_bd = [m for (lk, m) in valid_llaves_bd if lk in llaves_referencia]
-no_found_bd = [m for (lk, m) in valid_llaves_bd if lk not in llaves_referencia]
+no_found_bd = [lk for (lk, m) in valid_llaves_bd if lk not in llaves_referencia]
 
 # -----------------------
 # Generar PDF
@@ -234,17 +237,17 @@ elements.append(Spacer(1,0.3*inch))
 resumen = (
     f"Resumen de llaves usando columnas B|C:<br/>"
     f"Encontradas: {len(found_bc)} llaves, monto total C: {sum(found_bc):.2f}<br/>"
-    f"No encontradas: {len(no_found_bc)} llaves, monto total C: {sum(no_found_bc):.2f}<br/><br/>"
+    f"No encontradas: {len(no_found_bc)} llaves<br/><br/>"
     f"Resumen de llaves usando columnas B|D:<br/>"
     f"Encontradas: {len(found_bd)} llaves, monto total D: {sum(found_bd):.2f}<br/>"
-    f"No encontradas: {len(no_found_bd)} llaves, monto total D: {sum(no_found_bd):.2f}"
+    f"No encontradas: {len(no_found_bd)} llaves"
 )
 elements.append(Paragraph(resumen, styles['Normal']))
 elements.append(Spacer(1,0.3*inch))
 
 # 3) Excepciones
 if excepciones:
-    elements.append(Paragraph("Excepciones (columna B con <7 o >8 dígitos numéricos):", styles["Heading4"]))
+    elements.append(Paragraph("Excepciones (columna B con <7 o >8 dígitos numéricos, fechas ignoradas):", styles["Heading4"]))
     data_exc = [["Fila", "Valor B"]]
     for fila, val in excepciones:
         data_exc.append([str(fila), Paragraph(str(val), styles['Normal'])])
@@ -256,6 +259,34 @@ if excepciones:
     ]))
     elements.append(tabla_exc)
     elements.append(Spacer(1,0.3*inch))
+
+# 4) Llaves NO encontradas
+if no_found_bc or no_found_bd:
+    data_no = [[Paragraph("LLAVES NO ENCONTRADAS", styles['Heading4'])]]
+    for lk in no_found_bc + no_found_bd:
+        data_no.append([Paragraph(str(lk), styles['Normal'])])
+    tabla_no = Table(data_no, colWidths=[6.5*inch])
+    tabla_no.setStyle(TableStyle([
+        ('BACKGROUND',(0,0),(-1,0),colors.red),
+        ('TEXTCOLOR',(0,0),(-1,0),colors.whitesmoke),
+        ('GRID',(0,0),(-1,-1),0.5,colors.black),
+    ]))
+    elements.append(tabla_no)
+    elements.append(Spacer(1,0.3*inch))
+
+# 5) Llaves encontradas
+if found_bc or found_bd:
+    data_si = [[Paragraph("LLAVES ENCONTRADAS", styles['Heading4'])]]
+    for lk in [lk for (lk, m) in valid_llaves_bc if lk in llaves_referencia] + \
+              [lk for (lk, m) in valid_llaves_bd if lk in llaves_referencia]:
+        data_si.append([Paragraph(str(lk), styles['Normal'])])
+    tabla_si = Table(data_si, colWidths=[6.5*inch])
+    tabla_si.setStyle(TableStyle([
+        ('BACKGROUND',(0,0),(-1,0),colors.green),
+        ('TEXTCOLOR',(0,0),(-1,0),colors.whitesmoke),
+        ('GRID',(0,0),(-1,-1),0.5,colors.black),
+    ]))
+    elements.append(tabla_si)
 
 doc.build(elements)
 print("PDF generado:", ruta_pdf)
