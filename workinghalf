@@ -131,7 +131,7 @@ valid_llaves_bd = []
 excepciones = []
 
 # -----------------------
-# Generar llaves
+# Generar llaves según opción
 # -----------------------
 for idx, (b, c, d) in enumerate(zip(colB, colC, colD), start=2):  # fila Excel empieza en 2
     b_str = str(b).strip()
@@ -153,12 +153,18 @@ for idx, (b, c, d) in enumerate(zip(colB, colC, colD), start=2):  # fila Excel e
     amt_c = parse_amount_safe(c)
     amt_d = parse_amount_safe(d)
 
-    if amt_c is not None:
-        llave_bc = f"{id_seq} | {amt_c:.2f}"
-        valid_llaves_bc.append((llave_bc, amt_c))
-    if amt_d is not None:
-        llave_bd = f"{id_seq} | {amt_d:.2f}"
-        valid_llaves_bd.append((llave_bd, amt_d))
+    if tipo_validacion == "ach":
+        if amt_c is not None:
+            llave_bc = f"{id_seq} | {amt_c:.2f}"
+            valid_llaves_bc.append((llave_bc, amt_c))
+        elif amt_d is not None:
+            llave_bd = f"{id_seq} | {amt_d:.2f}"
+            valid_llaves_bd.append((llave_bd, amt_d))
+
+    elif tipo_validacion == "puente":
+        if amt_d is not None:  # SOLO B|D
+            llave_bd = f"{id_seq} | {amt_d:.2f}"
+            valid_llaves_bd.append((llave_bd, amt_d))
 
 # -----------------------
 # Leer referencias y calcular SHA256
@@ -233,15 +239,23 @@ tabla_hash.setStyle(TableStyle([
 elements.append(tabla_hash)
 elements.append(Spacer(1,0.3*inch))
 
-# 2) Resumen
-resumen = (
-    f"Resumen de llaves usando columnas B|C:<br/>"
-    f"Encontradas: {len(found_bc)} llaves, monto total C: {sum(found_bc):.2f}<br/>"
-    f"No encontradas: {len(no_found_bc)} llaves<br/><br/>"
-    f"Resumen de llaves usando columnas B|D:<br/>"
-    f"Encontradas: {len(found_bd)} llaves, monto total D: {sum(found_bd):.2f}<br/>"
-    f"No encontradas: {len(no_found_bd)} llaves"
-)
+# 2) Resumen dinámico
+if tipo_validacion == "ach":
+    resumen = (
+        f"Resumen de llaves usando columnas B|C:<br/>"
+        f"Encontradas: {len(found_bc)} llaves, monto total C: {sum(found_bc):.2f}<br/>"
+        f"No encontradas: {len(no_found_bc)} llaves<br/><br/>"
+        f"Resumen de llaves usando columnas B|D:<br/>"
+        f"Encontradas: {len(found_bd)} llaves, monto total D: {sum(found_bd):.2f}<br/>"
+        f"No encontradas: {len(no_found_bd)} llaves"
+    )
+else:  # Cuenta puente
+    resumen = (
+        f"Resumen de llaves usando columnas B|D:<br/>"
+        f"Encontradas: {len(found_bd)} llaves, monto total D: {sum(found_bd):.2f}<br/>"
+        f"No encontradas: {len(no_found_bd)} llaves"
+    )
+
 elements.append(Paragraph(resumen, styles['Normal']))
 elements.append(Spacer(1,0.3*inch))
 
